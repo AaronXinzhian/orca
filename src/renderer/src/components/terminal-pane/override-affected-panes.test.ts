@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { ManagedPane } from '@/lib/pane-manager/pane-manager-types'
-import { getOverrideAffectedPanes } from './override-affected-panes'
+import { getOverrideAffectedPanes, getPanesNeedingOverrideFit } from './override-affected-panes'
 
-// Only `id` matters for resolution; cast the partial fixtures to ManagedPane.
-function makePane(id: number): ManagedPane {
-  return { id } as ManagedPane
+function makePane(id: number, cols = 120, rows = 40): ManagedPane {
+  return { id, terminal: { cols, rows } } as ManagedPane
 }
 
 describe('getOverrideAffectedPanes', () => {
@@ -40,5 +39,21 @@ describe('getOverrideAffectedPanes', () => {
     const affected = getOverrideAffectedPanes(panes, (paneId) => bindings.get(paneId), 'pty-a')
 
     expect(affected.map((pane) => pane.id)).toEqual([1])
+  })
+})
+
+describe('getPanesNeedingOverrideFit', () => {
+  it('returns only affected panes whose grid does not already match the override', () => {
+    const panes = [makePane(1, 49, 20), makePane(2, 120, 40), makePane(3, 49, 21)]
+
+    const panesNeedingFit = getPanesNeedingOverrideFit(panes, 49, 20)
+
+    expect(panesNeedingFit.map((pane) => pane.id)).toEqual([2, 3])
+  })
+
+  it('returns nothing when every affected pane already matches the override', () => {
+    const panes = [makePane(1, 49, 20), makePane(2, 49, 20)]
+
+    expect(getPanesNeedingOverrideFit(panes, 49, 20)).toEqual([])
   })
 })

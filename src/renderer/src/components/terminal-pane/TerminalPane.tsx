@@ -79,7 +79,7 @@ import {
 import { resolvePaneKeyForManager } from '@/lib/pane-manager/pane-key-resolution'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { captureTerminalShutdownLayout } from './terminal-shutdown-layout-capture'
-import { getOverrideAffectedPanes } from './override-affected-panes'
+import { getOverrideAffectedPanes, getPanesNeedingOverrideFit } from './override-affected-panes'
 import {
   inspectRuntimeTerminalProcess,
   isRemoteRuntimePtyId
@@ -354,8 +354,22 @@ export default function TerminalPane({
         // override.cols/rows, matching the incoming stream. rAF lets the DOM
         // settle before the resize; no loud fallback is needed because the
         // override branch of safeFit is itself the authoritative resize.
+        // Why: override events fan out to every terminal tab; skip the rAF
+        // unless this tab has a pane still parked at the wrong grid.
+        const panesNeedingFit = getPanesNeedingOverrideFit(
+          getAffectedPanes(),
+          event.cols,
+          event.rows
+        )
+        if (panesNeedingFit.length === 0) {
+          return
+        }
         scheduleFitFrame(() => {
-          for (const pane of getAffectedPanes()) {
+          for (const pane of getPanesNeedingOverrideFit(
+            getAffectedPanes(),
+            event.cols,
+            event.rows
+          )) {
             safeFit(pane)
           }
         })

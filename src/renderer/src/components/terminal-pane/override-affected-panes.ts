@@ -18,3 +18,19 @@ export function getOverrideAffectedPanes(
 ): ManagedPane[] {
   return panes.filter((pane) => resolvePtyId(pane.id) === ptyId)
 }
+
+function paneNeedsOverrideFit(
+  pane: Pick<ManagedPane, 'terminal'>,
+  cols: number,
+  rows: number
+): boolean {
+  return pane.terminal.cols !== cols || pane.terminal.rows !== rows
+}
+
+export function getPanesNeedingOverrideFit(
+  panes: readonly ManagedPane[],
+  cols: number,
+  rows: number
+): ManagedPane[] {
+  return panes.filter((pane) => paneNeedsOverrideFit(pane, cols, rows))
+}
