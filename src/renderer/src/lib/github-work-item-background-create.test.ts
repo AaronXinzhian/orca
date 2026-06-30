@@ -690,6 +690,9 @@ describe('createGitHubWorkItemWorkspaceInBackground', () => {
     const request = continueCall?.[1] as WorktreeCreationRequest
     expect(request.issueCommand).toBeUndefined()
     expect(deps.confirmHooks).not.toHaveBeenCalledWith(expect.anything(), 'repo-1', 'issueCommand')
+    // Why: a declined setup trust short-circuits before the (up-to-15s) read,
+    // so workspace creation is never stalled to fetch a command we will drop.
+    expect(deps.readIssueCommand).not.toHaveBeenCalled()
   })
 
   it('does not run the issue command for PR items', async () => {

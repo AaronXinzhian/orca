@@ -255,7 +255,14 @@ export async function createGitHubWorkItemWorkspaceInBackground(
     // issues (numeric issue number) on git repos run it; PRs/Linear/folders never
     // do. Reuse the setup trust decision: a 'skip' there also skips the command.
     let issueCommand: WorktreeCreationRequest['issueCommand']
-    if (isGitRepoKind(repo) && args.item.type === 'issue' && typeof args.item.number === 'number') {
+    // Why: a declined setup trust also skips the issue command, so short-circuit
+    // before the (up-to-15s) read rather than reading just to drop the result.
+    if (
+      trustDecision !== 'skip' &&
+      isGitRepoKind(repo) &&
+      args.item.type === 'issue' &&
+      typeof args.item.number === 'number'
+    ) {
       // Why: read failures fail closed (no command), so create still proceeds.
       let effectiveContent = ''
       try {
@@ -267,7 +274,7 @@ export async function createGitHubWorkItemWorkspaceInBackground(
       if (!deps.hasPendingCreate(creationId)) {
         return { kind: 'background-started' }
       }
-      if (effectiveContent.length > 0 && trustDecision !== 'skip') {
+      if (effectiveContent.length > 0) {
         const issueCommandTrust = await deps.confirmHooks(store, args.repoId, 'issueCommand')
         if (!deps.hasPendingCreate(creationId)) {
           return { kind: 'background-started' }
