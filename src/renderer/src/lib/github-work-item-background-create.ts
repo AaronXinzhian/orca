@@ -19,7 +19,10 @@ import {
 } from '@/lib/launch-work-item-direct-preflight'
 import { agentLaunchCommandErrorMessage } from '@/lib/launch-work-item-direct-messages'
 import { ensureHooksConfirmed } from '@/lib/ensure-hooks-confirmed'
+import { renderIssueCommandTemplate } from '@/lib/new-workspace'
 import { getSettingsForRepoRuntimeOwner } from '@/lib/repo-runtime-owner'
+import { readRuntimeIssueCommand } from '@/runtime/runtime-hooks-client'
+import { isGitRepoKind } from '../../../shared/repo-kind'
 import { getRepoExecutionHostId, parseExecutionHostId } from '../../../shared/execution-host'
 import { evaluateRuntimeCompat } from '../../../shared/protocol-compat'
 import {
@@ -50,8 +53,9 @@ type BackgroundGitHubWorkItemCreateDeps = {
   confirmHooks: (
     store: GitHubWorkItemBackgroundStoreSnapshot,
     repoId: string,
-    scope: 'setup'
+    scope: 'setup' | 'issueCommand'
   ) => ReturnType<typeof ensureHooksConfirmed>
+  readIssueCommand: typeof readRuntimeIssueCommand
   beginBackgroundCreate: typeof beginBackgroundWorktreePreparation
   continueBackgroundCreate: typeof continueBackgroundWorktreeCreation
   activatePendingCreate: (creationId: string) => void
@@ -78,8 +82,9 @@ const DEFAULT_DEPS: BackgroundGitHubWorkItemCreateDeps = {
     useAppStore.getState().activePendingCreationId === creationId,
   resolveSetupDecision: resolveDirectSetupDecision,
   resolvePrStartPoint: resolveDirectPrStartPoint,
-  confirmHooks: (store, repoId, scope) =>
+  confirmHooks: (store, repoId, scope: 'setup' | 'issueCommand') =>
     ensureHooksConfirmed(store as ReturnType<typeof useAppStore.getState>, repoId, scope),
+  readIssueCommand: readRuntimeIssueCommand,
   beginBackgroundCreate: beginBackgroundWorktreePreparation,
   continueBackgroundCreate: continueBackgroundWorktreeCreation,
   activatePendingCreate: (creationId) => {
@@ -246,6 +251,38 @@ export async function createGitHubWorkItemWorkspaceInBackground(
     }
     const backendStartup = buildGitHubWorkItemBackendStartup(agent, startupPlan, quickTelemetry)
 
+    // Why: mirror the composer's trust-gated issue-command split. Only GitHub
+    // issues (numeric issue number) on git repos run it; PRs/Linear/folders never
+    // do. Reuse the setup trust decision: a 'skip' there also skips the command.
+    let issueCommand: WorktreeCreationRequest['issueCommand']
+    if (isGitRepoKind(repo) && args.item.type === 'issue' && typeof args.item.number === 'number') {
+      // Why: read failures fail closed (no command), so create still proceeds.
+      let effectiveContent = ''
+      try {
+        const issueCommandRead = await deps.readIssueCommand(repoOwnerSettings, args.repoId)
+        effectiveContent = (issueCommandRead.effectiveContent ?? '').trim()
+      } catch {
+        effectiveContent = ''
+      }
+      if (!deps.hasPendingCreate(creationId)) {
+        return { kind: 'background-started' }
+      }
+      if (effectiveContent.length > 0 && trustDecision !== 'skip') {
+        const issueCommandTrust = await deps.confirmHooks(store, args.repoId, 'issueCommand')
+        if (!deps.hasPendingCreate(creationId)) {
+          return { kind: 'background-started' }
+        }
+        if (issueCommandTrust === 'run') {
+          issueCommand = {
+            command: renderIssueCommandTemplate(effectiveContent, {
+              issueNumber: args.item.number,
+              artifactUrl: args.item.url ?? null
+            })
+          }
+        }
+      }
+    }
+
     const request: WorktreeCreationRequest = {
       ...initialRequest,
       ...(baseBranch ? { baseBranch } : {}),
@@ -255,6 +292,7 @@ export async function createGitHubWorkItemWorkspaceInBackground(
       agent,
       ...(branchNameOverride ? { branchNameOverride } : {}),
       ...(backendStartup ? { startup: backendStartup } : {}),
+      ...(issueCommand ? { issueCommand } : {}),
       startupPlan,
       quickPrompt,
       quickTelemetry

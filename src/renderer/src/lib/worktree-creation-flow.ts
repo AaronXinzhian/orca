@@ -203,7 +203,8 @@ async function executeWorktreeCreation(
       sidebarRevealBehavior: 'auto',
       ...(result.setup ? { setup: result.setup } : {}),
       ...(result.defaultTabs ? { defaultTabs: result.defaultTabs } : {}),
-      ...(startupOpt ? { startup: startupOpt } : {})
+      ...(startupOpt ? { startup: startupOpt } : {}),
+      ...(request.issueCommand ? { issueCommand: request.issueCommand } : {})
     })
     primaryTabId = activation === false ? null : activation.primaryTabId
   } else {
@@ -215,7 +216,7 @@ async function executeWorktreeCreation(
       worktree.id,
       startupOpt,
       result.setup,
-      undefined,
+      request.issueCommand,
       result.defaultTabs,
       { activateCreatedTabs: false }
     )
