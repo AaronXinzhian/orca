@@ -348,7 +348,14 @@ export function getTuiAgentDetectCommands(config: TuiAgentConfig): string[] {
 
 export function getTuiAgentLaunchCommand(
   config: TuiAgentConfig,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  opts?: { isRemote?: boolean }
 ): string {
+  // Why: the SSH relay shim is always named `orca` on Unix, so the local-only
+  // `orca-ide` rename (avoids shadowing the GNOME Orca screen reader) must not
+  // leak to Linux remotes — the remote has no such desktop binary on PATH.
+  if (opts?.isRemote && platform === 'linux') {
+    return config.launchCmd
+  }
   return config.launchCmdByPlatform?.[platform] ?? config.launchCmd
 }

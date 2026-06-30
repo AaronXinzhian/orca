@@ -86,6 +86,7 @@ import { addOrcaWslInteropEnv } from '../pty/wsl-orca-env'
 import type { CodexAccountSelectionTarget } from '../codex-accounts/runtime-selection'
 import { isHostCodexHomeForWsl, isWslCodexHomeForHost } from '../pty/codex-home-wsl-env'
 import { buildConfiguredProxyEnv, type NetworkProxySettings } from '../../shared/network-proxy'
+import { resolveSetupAgentSequenceLaunchCommand } from '../../shared/setup-agent-sequencing'
 import { parseWorkspaceKey } from '../../shared/workspace-scope'
 import {
   assertFolderWorkspacePathUsable,
@@ -751,9 +752,10 @@ export function buildPtyHostEnv(
   // in lock-step across spawn paths without pushing process.env onto the
   // IPC wire unnecessarily.
   const preexistingOpenCodeConfigDir = resolveOpenCodeSourceConfigDir(baseEnv)
-  const piAgentKind = detectPiAgentKindFromCommand(opts.launchCommand)
+  const launchCommandHint = resolveSetupAgentSequenceLaunchCommand(baseEnv, opts.launchCommand)
+  const piAgentKind = detectPiAgentKindFromCommand(launchCommandHint)
   const hasLaunchCommand =
-    typeof opts.launchCommand === 'string' && opts.launchCommand.trim().length > 0
+    typeof launchCommandHint === 'string' && launchCommandHint.trim().length > 0
   const shouldPrepareOmpShadow = piAgentKind === 'omp' || !hasLaunchCommand
   // Why: source shadows are agent-scoped. Trusting the other kind's source
   // would reintroduce the exact Pi/OMP extension-state shadowing this PR fixes.
@@ -783,7 +785,7 @@ export function buildPtyHostEnv(
         delete baseEnv.ORCA_OPENCODE_SOURCE_CONFIG_DIR
       }
     }
-    if (isMimoLaunchCommand(opts.launchCommand)) {
+    if (isMimoLaunchCommand(launchCommandHint)) {
       const preexistingMimocodeHome = resolveMimocodeSourceHome(baseEnv)
       Object.assign(baseEnv, mimoCodeHookService.buildPtyEnv(id, preexistingMimocodeHome))
       if (baseEnv.MIMOCODE_HOME) {
@@ -1183,6 +1185,7 @@ export function registerPtyHandlers(
   ipcMain.removeHandler('pty:hasChildProcesses')
   ipcMain.removeHandler('pty:getForegroundProcess')
   ipcMain.removeHandler('pty:getCwd')
+  ipcMain.removeHandler('pty:getSize')
   ipcMain.removeHandler('pty:declarePendingPaneSerializer')
   ipcMain.removeHandler('pty:settlePaneSerializer')
   ipcMain.removeHandler('pty:clearPendingPaneSerializer')
@@ -1880,6 +1883,9 @@ export function registerPtyHandlers(
       if (args.command !== undefined) {
         spawnOptions.command = args.command
       }
+      if (args.commandDelivery !== undefined) {
+        spawnOptions.commandDelivery = args.commandDelivery
+      }
       if (args.startupCommandDelivery !== undefined) {
         spawnOptions.startupCommandDelivery = args.startupCommandDelivery
       }
@@ -2224,6 +2230,7 @@ export function registerPtyHandlers(
       lastTitle?: string
       seq?: number
       source?: 'headless' | 'renderer'
+      alternateScreen?: boolean
     } | null> => {
       if (!runtime || typeof args?.id !== 'string' || args.id.length === 0) {
         return null
@@ -2255,6 +2262,7 @@ export function registerPtyHandlers(
         env?: Record<string, string>
         envToDelete?: string[]
         command?: string
+        commandDelivery?: 'renderer' | 'provider'
         launchConfig?: SleepingAgentLaunchConfig
         launchAgent?: TuiAgent
         startupCommandDelivery?: StartupCommandDelivery
@@ -2555,6 +2563,9 @@ export function registerPtyHandlers(
       }
       if (args.command !== undefined) {
         spawnOptions.command = args.command
+      }
+      if (args.commandDelivery !== undefined) {
+        spawnOptions.commandDelivery = args.commandDelivery
       }
       if (args.startupCommandDelivery !== undefined) {
         spawnOptions.startupCommandDelivery = args.startupCommandDelivery
@@ -3227,6 +3238,35 @@ export function registerPtyHandlers(
       return ''
     }
   })
+
+  // Why: the renderer forwards resizes fire-and-forget and otherwise has no way
+  // to learn the PTY's actual size. A resize dropped main-side (suppression
+  // window, mobile-driver gate, or a provider no-op) OR daemon/SSH-side (the
+  // remote resize notify is unacked and can be silently dropped — session not
+  // yet alive, exited, invalid dims, cold-restore snapshot-col coercion) leaves
+  // the renderer believing it synced when it did not, so a later same-cols
+  // layout never re-forwards and the TUI stays garbled. ptySizes records only
+  // the REQUESTED size, so it cannot reveal such a drop. Prefer the provider's
+  // APPLIED size (node-pty's cached winsize / the daemon emulator's dims, which
+  // track the subprocess resize) so the renderer's resume drift-check sees the
+  // truth; fall back to ptySizes only when the provider can't report (no
+  // getAppliedSize, e.g. SSH relay, or an unknown id) — a null then reads as
+  // "cannot confirm", which the renderer treats as a cue to re-forward once.
+  ipcMain.handle(
+    'pty:getSize',
+    async (_event, args: { id: string }): Promise<{ cols: number; rows: number } | null> => {
+      try {
+        const applied = await tryGetProviderForPty(args.id)?.getAppliedSize?.(args.id)
+        if (applied) {
+          return applied
+        }
+      } catch {
+        // Fall through to the requested-size cache on any provider/RPC failure
+        // so a dead daemon/relay never blocks or throws across the IPC boundary.
+      }
+      return ptySizes.get(args.id) ?? null
+    }
+  )
 
   // Why: pre-signal handshake handlers. See
   // docs/mobile-prefer-renderer-scrollback.md and the rationale on

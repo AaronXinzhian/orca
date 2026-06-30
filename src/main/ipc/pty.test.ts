@@ -172,6 +172,7 @@ vi.mock('../agent-hooks/migration-unsupported-pty-state', () => ({
 }))
 import { LocalPtyProvider } from '../providers/local-pty-provider'
 import { makePaneKey } from '../../shared/stable-pane-id'
+import { SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV } from '../../shared/setup-agent-sequencing'
 import {
   registerPtyHandlers,
   registerSshPtyProvider,
@@ -200,6 +201,12 @@ const POWERSHELL_OSC133_ARGS = [
   '-EncodedCommand',
   encodePowerShellCommand(getPowerShellOsc133Bootstrap())
 ]
+// Why: on Windows the spawn path resolves a bare PowerShell family name to a
+// real absolute executable before handing it to ConPTY (PR #6537 / issue
+// #5161) — a bare/alias `pwsh.exe` makes CreateProcessW fail with error code 5.
+// These match the deterministic install roots pinned in the win32 beforeEach.
+const RESOLVED_WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+const RESOLVED_PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
 const TEST_CODEX_HOME =
   process.platform === 'win32'
     ? 'C:\\Users\\test\\AppData\\Roaming\\orca\\codex-runtime-home\\home'
@@ -298,8 +305,17 @@ describe('registerPtyHandlers', () => {
     mainWindow.webContents.on.mockReset()
     mainWindow.webContents.send.mockReset()
 
+    // Why: mirror real Electron — ipcMain.handle throws on a duplicate channel
+    // unless removeHandler cleared it first. This catches a re-registration
+    // (macOS re-activate / new window) that forgets to remove a handle channel.
     handleMock.mockImplementation((channel: string, handler: (...a: unknown[]) => unknown) => {
+      if (handlers.has(channel)) {
+        throw new Error(`Attempted to register a second handler for '${channel}'`)
+      }
       handlers.set(channel, handler)
+    })
+    removeHandlerMock.mockImplementation((channel: string) => {
+      handlers.delete(channel)
     })
     getPathMock.mockReturnValue('/tmp/orca-user-data')
     existsSyncMock.mockReturnValue(true)
@@ -790,6 +806,20 @@ describe('registerPtyHandlers', () => {
       }
     )
 
+    it('uses sequenced startup env as the MiMo launch hint when command is a wrapper', async () => {
+      const env = await spawnAndGetEnv(
+        { [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'mimo --prompt hi' },
+        undefined,
+        undefined,
+        undefined,
+        'bash -lc wait-wrapper'
+      )
+
+      expect(mimoCodeBuildPtyEnvMock).toHaveBeenCalledTimes(1)
+      expect(env.MIMOCODE_HOME).toBe('/tmp/orca-mimocode-shared')
+      expect(env.ORCA_MIMOCODE_HOME).toBe('/tmp/orca-mimocode-shared')
+    })
+
     it('does not inject MiMo overlay for non-mimo launches', async () => {
       await spawnAndGetEnv()
 
@@ -888,6 +918,29 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_OMP_SOURCE_AGENT_DIR).toBe('/tmp/user-omp-agent')
       // CRITICAL: a Pi-named shadow MUST NOT leak into an OMP PTY env.
       expect(env.ORCA_PI_CODING_AGENT_DIR).toBeUndefined()
+      expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
+    })
+
+    it('uses sequenced startup env as the OMP launch hint when command is a wrapper', async () => {
+      const env = await spawnAndGetEnv(
+        {
+          PI_CODING_AGENT_DIR: '/tmp/user-omp-agent',
+          [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'omp --resume'
+        },
+        undefined,
+        undefined,
+        undefined,
+        'powershell wait-wrapper'
+      )
+
+      expect(piBuildPtyEnvMock).toHaveBeenCalledWith(
+        expect.any(String),
+        '/tmp/user-omp-agent',
+        'omp'
+      )
+      expect(env.ORCA_OMP_STATUS_EXTENSION).toBe(
+        '/tmp/user-omp-agent/extensions/orca-agent-status.ts'
+      )
       expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
     })
 
@@ -1338,6 +1391,29 @@ describe('registerPtyHandlers', () => {
         )
         expect(env.ORCA_OMP_SOURCE_AGENT_DIR).toBe('/user/.omp/agent')
         expect(env.ORCA_PI_CODING_AGENT_DIR).toBeUndefined()
+        expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
+      })
+
+      it('uses sequenced startup env as the daemon OMP launch hint when command is a wrapper', async () => {
+        const env = await daemonSpawnAndGetEnv(
+          {
+            PI_CODING_AGENT_DIR: '/user/.omp/agent',
+            [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'omp --resume'
+          },
+          undefined,
+          undefined,
+          undefined,
+          { command: 'powershell wait-wrapper' }
+        )
+
+        expect(piBuildPtyEnvMock).toHaveBeenCalledWith(
+          expect.any(String),
+          '/user/.omp/agent',
+          'omp'
+        )
+        expect(env.ORCA_OMP_STATUS_EXTENSION).toBe(
+          '/user/.omp/agent/extensions/orca-agent-status.ts'
+        )
         expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
       })
 
@@ -3315,6 +3391,107 @@ describe('registerPtyHandlers', () => {
     expect(provider.getForegroundProcess).not.toHaveBeenCalled()
   })
 
+  // Why: regression for the Claude-Code split-pane garbled-render desync. resize
+  // is fire-and-forget for daemon-backed PTYs, so a corrective narrow resize can
+  // be dropped while the renderer believes it landed. pty:getSize must report the
+  // size the PTY ACTUALLY applied (so the renderer's resume drift-check re-asserts
+  // the dropped resize) rather than the size last requested. This models a daemon
+  // provider whose resize is dropped but whose getAppliedSize stays at the wide
+  // spawn size; pty:getSize must surface the wide (applied) size, not the narrow
+  // (requested) one.
+  describe('pty:getSize reports applied size, not requested size', () => {
+    function setupProviderWithAppliedSize(args: {
+      applied: { cols: number; rows: number } | null
+      resize?: (cols: number, rows: number) => void
+      getAppliedSize?: (id: string) => Promise<{ cols: number; rows: number } | null>
+    }): void {
+      setLocalPtyProvider({
+        spawn: vi.fn(async (opts: { sessionId?: string }) => ({
+          id: opts.sessionId ?? 'daemon-pty'
+        })),
+        write: vi.fn(),
+        resize: vi.fn(args.resize ?? (() => {})),
+        getAppliedSize: vi.fn(args.getAppliedSize ?? (async () => args.applied)),
+        kill: vi.fn(),
+        shutdown: vi.fn(),
+        onData: vi.fn(() => vi.fn()),
+        onExit: vi.fn(() => vi.fn()),
+        listProcesses: vi.fn(async () => []),
+        getForegroundProcess: vi.fn(async () => null)
+      } as never)
+    }
+
+    const resizeListener = (): ((event: unknown, args: unknown) => void) => {
+      const call = onMock.mock.calls.find((entry: unknown[]) => entry[0] === 'pty:resize')
+      if (!call) {
+        throw new Error('missing pty:resize listener')
+      }
+      return call[1] as (event: unknown, args: unknown) => void
+    }
+
+    it('returns the applied (wide) size after a dropped narrow resize', async () => {
+      // The daemon keeps the PTY at its wide spawn size; the narrow resize is
+      // silently dropped (provider.resize is a no-op fire-and-forget).
+      setupProviderWithAppliedSize({ applied: { cols: 200, rows: 50 } })
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never)
+      const spawn = await handlers.get('pty:spawn')!(null, { cols: 200, rows: 50, env: {} })
+      const id = (spawn as { id: string }).id
+
+      // Renderer forwards a corrective narrow resize; it is dropped daemon-side.
+      resizeListener()(mainWindowIpcEvent, { id, cols: 80, rows: 24 })
+
+      // pty:getSize must surface the applied wide size so the renderer detects
+      // drift (xterm=80 vs PTY=200) and re-asserts — NOT the requested 80.
+      const reported = await handlers.get('pty:getSize')!(null, { id })
+      expect(reported).toEqual({ cols: 200, rows: 50 })
+    })
+
+    it('falls back to the requested size when the provider cannot report applied size', async () => {
+      // No getAppliedSize (e.g. SSH relay): the requested-size cache is the only
+      // signal, so getSize returns it — preserving prior behavior, not a regression.
+      setupProviderWithAppliedSize({ applied: null, getAppliedSize: undefined })
+      setLocalPtyProvider({
+        spawn: vi.fn(async (opts: { sessionId?: string }) => ({
+          id: opts.sessionId ?? 'daemon-pty'
+        })),
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        shutdown: vi.fn(),
+        onData: vi.fn(() => vi.fn()),
+        onExit: vi.fn(() => vi.fn()),
+        listProcesses: vi.fn(async () => []),
+        getForegroundProcess: vi.fn(async () => null)
+      } as never)
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never)
+      const spawn = await handlers.get('pty:spawn')!(null, { cols: 200, rows: 50, env: {} })
+      const id = (spawn as { id: string }).id
+      resizeListener()(mainWindowIpcEvent, { id, cols: 80, rows: 24 })
+
+      const reported = await handlers.get('pty:getSize')!(null, { id })
+      expect(reported).toEqual({ cols: 80, rows: 24 })
+    })
+
+    it('falls back to the requested size when getAppliedSize throws', async () => {
+      // A dead daemon/relay must never throw across the IPC boundary or block.
+      setupProviderWithAppliedSize({
+        applied: null,
+        getAppliedSize: async () => {
+          throw new Error('daemon unreachable')
+        }
+      })
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never)
+      const spawn = await handlers.get('pty:spawn')!(null, { cols: 100, rows: 30, env: {} })
+      const id = (spawn as { id: string }).id
+
+      const reported = await handlers.get('pty:getSize')!(null, { id })
+      expect(reported).toEqual({ cols: 100, rows: 30 })
+    })
+  })
+
   it('injects ORCA_TERMINAL_HANDLE for non-local PTY providers', async () => {
     const spawn = vi.fn(async () => ({ id: 'remote-pty' }))
     registerSshPtyProvider('ssh-1', {
@@ -4817,6 +4994,7 @@ describe('registerPtyHandlers', () => {
   describe('Windows UTF-8 code page', () => {
     let originalPlatform: string
     let originalComspec: string | undefined
+    const savedWindowsResolutionEnv: Record<string, string | undefined> = {}
 
     beforeEach(() => {
       originalPlatform = process.platform
@@ -4826,6 +5004,32 @@ describe('registerPtyHandlers', () => {
         value: 'win32'
       })
       process.env.USERPROFILE = 'C:\\Users\\test'
+      // Why: the production spawn path resolves a bare PowerShell family name to
+      // a real absolute executable (PR #6537 / issue #5161). Pin the install
+      // roots it probes so the resolved path is deterministic regardless of the
+      // host OS the suite runs on (CI verify runs on Linux, devs on Windows).
+      for (const key of ['SystemRoot', 'ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)']) {
+        savedWindowsResolutionEnv[key] = process.env[key]
+      }
+      process.env.SystemRoot = 'C:\\Windows'
+      process.env.ProgramW6432 = 'C:\\Program Files'
+      process.env.ProgramFiles = 'C:\\Program Files'
+      delete process.env['ProgramFiles(x86)']
+      // Why: the resolver treats any existing, non-zero-size `.exe` outside the
+      // Microsoft Store WindowsApps alias dir as a real executable. Directories
+      // (cwd validation) must still report isDirectory(); the default mock omits
+      // isFile()/size, which would make every PowerShell candidate fail to
+      // resolve and collapse the chain to cmd.exe.
+      statSyncMock.mockImplementation((target: string) => {
+        const isExe = /\.exe$/i.test(String(target))
+        return {
+          isDirectory: () => !isExe,
+          isFile: () => isExe,
+          size: isExe ? 1024 : 0,
+          mode: 0o755
+        }
+      })
+      existsSyncMock.mockReturnValue(true)
     })
 
     afterEach(() => {
@@ -4837,6 +5041,13 @@ describe('registerPtyHandlers', () => {
         delete process.env.COMSPEC
       } else {
         process.env.COMSPEC = originalComspec
+      }
+      for (const [key, value] of Object.entries(savedWindowsResolutionEnv)) {
+        if (value === undefined) {
+          delete process.env[key]
+        } else {
+          process.env[key] = value
+        }
       }
       delete process.env.PYTHONUTF8
     })
@@ -4935,7 +5146,7 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'powershell.exe',
+        RESOLVED_WINDOWS_POWERSHELL,
         POWERSHELL_OSC133_ARGS,
         expect.any(Object)
       )
@@ -5059,7 +5270,7 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'powershell.exe',
+        RESOLVED_WINDOWS_POWERSHELL,
         POWERSHELL_OSC133_ARGS,
         expect.any(Object)
       )
@@ -5081,7 +5292,11 @@ describe('registerPtyHandlers', () => {
       )
       await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
-      expect(spawnMock).toHaveBeenCalledWith('pwsh.exe', POWERSHELL_OSC133_ARGS, expect.any(Object))
+      expect(spawnMock).toHaveBeenCalledWith(
+        RESOLVED_PWSH7,
+        POWERSHELL_OSC133_ARGS,
+        expect.any(Object)
+      )
     })
 
     it('falls back to powershell.exe when PowerShell 7 is selected but unavailable', async () => {
@@ -5101,7 +5316,7 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'powershell.exe',
+        RESOLVED_WINDOWS_POWERSHELL,
         POWERSHELL_OSC133_ARGS,
         expect.any(Object)
       )
@@ -5124,7 +5339,7 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24, shellOverride: 'pwsh.exe' })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'powershell.exe',
+        RESOLVED_WINDOWS_POWERSHELL,
         POWERSHELL_OSC133_ARGS,
         expect.any(Object)
       )

@@ -140,9 +140,7 @@ describe('agent process recognition', () => {
       agent: 'qwen-code',
       processName: 'qwen'
     })
-    expect(
-      recognizeAgentProcess(String.raw`C:\Users\dev\AppData\Roaming\npm\qwen.cmd`)
-    ).toEqual({
+    expect(recognizeAgentProcess(String.raw`C:\Users\dev\AppData\Roaming\npm\qwen.cmd`)).toEqual({
       agent: 'qwen-code',
       processName: 'qwen'
     })
