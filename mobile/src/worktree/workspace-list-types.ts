@@ -1,3 +1,4 @@
+import type { ExecutionHostId } from '../../../src/shared/execution-host'
 import type { RuntimeWorktreeAgentRow } from '../../../src/shared/runtime-types'
 
 export type Worktree = {
@@ -5,6 +6,8 @@ export type Worktree = {
   workspaceKind?: 'git' | 'folder-workspace'
   worktreeId: string
   repoId: string
+  hostId?: ExecutionHostId
+  terminalPlatform?: NodeJS.Platform
   repo: string
   branch: string
   displayName: string

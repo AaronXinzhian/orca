@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Pressable, RefreshControl, SectionList, Text, View } from 'react-native'
+import { ActivityIndicator, Pressable, RefreshControl, SectionList, Text, View } from 'react-native'
 import { colors } from '../theme/mobile-theme'
 import { MobileAgentIcon } from '../components/MobileAgentIcon'
 import { recentSessionConversationTurns } from '../../../src/shared/ai-vault-session-display'
@@ -18,6 +18,8 @@ type Props = {
   sessionsById: ReadonlyMap<string, AiVaultSession>
   refreshing: boolean
   showCurrentWorktreeBadges: boolean
+  resumeActionStateBySessionId?: ReadonlyMap<string, { disabled: boolean; loading: boolean }>
+  onResume?: (session: AiVaultSession) => void | Promise<void>
   onRefresh: () => void
 }
 
@@ -26,6 +28,8 @@ export function MobileAgentSessionHistoryList({
   sessionsById,
   refreshing,
   showCurrentWorktreeBadges,
+  resumeActionStateBySessionId,
+  onResume,
   onRefresh
 }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -41,10 +45,19 @@ export function MobileAgentSessionHistoryList({
         expanded={expandedId === item.id}
         session={sessionsById.get(item.id) ?? null}
         showCurrentWorktreeBadge={showCurrentWorktreeBadges}
+        resumeActionState={resumeActionStateBySessionId?.get(item.id)}
+        onResume={onResume}
         onPress={() => toggleExpanded(item.id)}
       />
     ),
-    [expandedId, sessionsById, showCurrentWorktreeBadges, toggleExpanded]
+    [
+      expandedId,
+      onResume,
+      resumeActionStateBySessionId,
+      sessionsById,
+      showCurrentWorktreeBadges,
+      toggleExpanded
+    ]
   )
 
   return (
@@ -78,12 +91,16 @@ function AgentHistoryCardRow({
   expanded,
   session,
   showCurrentWorktreeBadge,
+  resumeActionState,
+  onResume,
   onPress
 }: {
   card: MobileAgentHistoryCard
   expanded: boolean
   session: AiVaultSession | null
   showCurrentWorktreeBadge: boolean
+  resumeActionState?: { disabled: boolean; loading: boolean }
+  onResume?: (session: AiVaultSession) => void | Promise<void>
   onPress: () => void
 }) {
   const previewTurns = useMemo(
@@ -117,6 +134,30 @@ function AgentHistoryCardRow({
           <View style={styles.currentBadge}>
             <Text style={styles.currentBadgeText}>current worktree</Text>
           </View>
+        ) : null}
+        {session && onResume ? (
+          <Pressable
+            style={({ pressed }) => [
+              styles.resumeButton,
+              resumeActionState?.disabled && styles.resumeButtonDisabled,
+              pressed && !resumeActionState?.disabled && styles.resumeButtonPressed
+            ]}
+            onPress={(event) => {
+              event.stopPropagation()
+              if (!resumeActionState?.disabled) {
+                void onResume(session)
+              }
+            }}
+            disabled={resumeActionState?.disabled}
+            accessibilityRole="button"
+            accessibilityLabel="Resume agent session"
+          >
+            {resumeActionState?.loading ? (
+              <ActivityIndicator size="small" color={colors.bgBase} />
+            ) : (
+              <Text style={styles.resumeButtonText}>Resume</Text>
+            )}
+          </Pressable>
         ) : null}
       </View>
       {expanded && previewTurns.length > 0 ? (

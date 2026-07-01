@@ -15,6 +15,11 @@ export type MobileAgentHistoryCard = {
   isCurrentWorktree: boolean
 }
 
+export type MobileAgentHistoryResumeActionState = {
+  disabled: boolean
+  loading: boolean
+}
+
 // Why: a session belongs to the active worktree when its recorded cwd is inside
 // (or equal to) the worktree path; session rows carry no host id, so this is a
 // path-prefix check (same logic the desktop badge uses).
@@ -45,4 +50,19 @@ export function buildMobileAgentHistoryCard(
     timeAgo: Number.isFinite(updatedAtMs) ? formatTimeAgo(updatedAtMs, now) : '',
     isCurrentWorktree: isSessionInActiveWorktree(session, activeWorktreePath)
   }
+}
+
+export function buildMobileAgentHistoryResumeActionState(
+  sessions: readonly Pick<AiVaultSession, 'id'>[],
+  resumingSessionId: string | null
+): ReadonlyMap<string, MobileAgentHistoryResumeActionState> {
+  return new Map(
+    sessions.map((session) => [
+      session.id,
+      {
+        disabled: resumingSessionId !== null,
+        loading: resumingSessionId === session.id
+      }
+    ])
+  )
 }

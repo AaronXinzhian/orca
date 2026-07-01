@@ -41,6 +41,7 @@ export function useMobileAgentHistoryState(params: MobileAgentHistoryStateParams
   const forceReconnect = useForceReconnect()
   const [scope, setScope] = useState<AiVaultScope>('workspace')
   const [screenState, setScreenState] = useState<AgentHistoryScreenState>({ kind: 'loading' })
+  const [hostStatusResult, setHostStatusResult] = useState<unknown>(null)
   const [refreshing, setRefreshing] = useState(false)
   const generationRef = useRef(0)
   const mountedRef = useRef(true)
@@ -90,6 +91,7 @@ export function useMobileAgentHistoryState(params: MobileAgentHistoryStateParams
           throw new Error(statusResponse.error?.message || 'Unable to reach host')
         }
         const status = (statusResponse as RpcSuccess).result as StatusWithCapabilities
+        setHostStatusResult(status)
         if (!status.capabilities?.includes(MOBILE_AI_VAULT_CAPABILITY)) {
           setScreenState({ kind: 'unsupported' })
           return
@@ -125,6 +127,7 @@ export function useMobileAgentHistoryState(params: MobileAgentHistoryStateParams
           return
         }
         const message = err instanceof Error ? err.message : 'Unable to load agent sessions'
+        setHostStatusResult(null)
         setScreenState({ kind: 'error', message })
       }
     },
@@ -172,6 +175,7 @@ export function useMobileAgentHistoryState(params: MobileAgentHistoryStateParams
     scope,
     screenState,
     refreshing,
+    hostStatusResult,
     activeWorktreePath,
     scopeFilterPaths,
     onSelectScope,

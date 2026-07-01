@@ -97,13 +97,14 @@ export function buildAiVaultResumeCommand(args: {
   platform: NodeJS.Platform
   commandOverride?: string | null
   codexHome?: string | null
+  shell?: AgentStartupShell
 }): string {
-  const { agent, sessionId, cwd, platform, commandOverride, codexHome } = args
+  const { agent, sessionId, cwd, platform, commandOverride, codexHome, shell } = args
   const baseCommand = commandOverride?.trim() || defaultAiVaultResumeCommandBase(agent)
   const sessionArg = quoteShellArg(sessionId, platform)
   const resumeCommand = buildAgentResumeInvocation(agent, baseCommand, sessionArg)
 
-  return buildAiVaultResumeShellCommand({ resumeCommand, cwd, platform, codexHome })
+  return buildAiVaultResumeShellCommand({ resumeCommand, cwd, platform, codexHome, shell })
 }
 
 export function buildAiVaultResumeShellCommand(args: {

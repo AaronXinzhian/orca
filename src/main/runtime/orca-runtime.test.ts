@@ -1235,6 +1235,18 @@ describe('OrcaRuntimeService', () => {
     expect(status.minCompatibleMobileVersion).toBeGreaterThanOrEqual(0)
   })
 
+  it('reports the configured Windows terminal shell on status', () => {
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getSettings: () => ({
+        ...store.getSettings(),
+        terminalWindowsShell: 'wsl.exe'
+      })
+    } as never)
+
+    expect(runtime.getStatus().terminalWindowsShell).toBe('wsl.exe')
+  })
+
   it('advertises browser screencast only when a renderer window is available', () => {
     const runtime = createRuntime()
     electronMocks.BrowserWindow.fromId.mockReturnValue({ isDestroyed: () => false } as never)
@@ -16642,6 +16654,7 @@ describe('OrcaRuntimeService', () => {
           workspaceKind: 'git',
           worktreeId: 'repo-1::/tmp/worktree-a',
           repoId: 'repo-1',
+          terminalPlatform: process.platform,
           repo: 'repo',
           path: '/tmp/worktree-a',
           branch: 'feature/foo',
@@ -16695,6 +16708,58 @@ describe('OrcaRuntimeService', () => {
     const { worktrees } = await runtime.getWorktreePs()
     const summary = worktrees.find((w) => w.worktreeId === TEST_WORKTREE_ID)
     expect(summary?.linkedPR).toEqual({ number: 42, state: 'merged' })
+  })
+
+  it('carries persisted worktree host ownership in mobile summaries', async () => {
+    const metaById = {
+      [TEST_WORKTREE_ID]: {
+        ...store.getAllWorktreeMeta()[TEST_WORKTREE_ID],
+        hostId: 'runtime:owner-runtime' as const
+      }
+    }
+    const runtimeStore = {
+      ...store,
+      getAllWorktreeMeta: () => metaById,
+      getWorktreeMeta: (worktreeId: string) => metaById[worktreeId]
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    const { worktrees } = await runtime.getWorktreePs()
+
+    expect(worktrees.find((worktree) => worktree.worktreeId === TEST_WORKTREE_ID)).toMatchObject({
+      repoId: TEST_REPO_ID,
+      hostId: 'runtime:owner-runtime'
+    })
+  })
+
+  it('reports the resolved terminal platform for WSL project mobile summaries', async () => {
+    await withPlatform('win32', async () => {
+      const runtime = new OrcaRuntimeService({
+        ...store,
+        getProjects: () => [
+          {
+            id: 'project-1',
+            displayName: 'repo',
+            badgeColor: 'blue',
+            sourceRepoIds: [TEST_REPO_ID],
+            localWindowsRuntimePreference: { kind: 'wsl', distro: 'Ubuntu' },
+            createdAt: 0,
+            updatedAt: 0
+          }
+        ],
+        getSettings: () => ({
+          ...store.getSettings(),
+          localWindowsRuntimeDefault: { kind: 'windows-host' }
+        })
+      } as never)
+
+      const { worktrees } = await runtime.getWorktreePs()
+
+      expect(worktrees.find((worktree) => worktree.worktreeId === TEST_WORKTREE_ID)).toMatchObject({
+        repoId: TEST_REPO_ID,
+        terminalPlatform: 'linux'
+      })
+    })
   })
 
   it('omits worktrees hidden by the host visibility policy from mobile summaries', async () => {

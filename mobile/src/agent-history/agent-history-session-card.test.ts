@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AiVaultSession } from '../../../src/shared/ai-vault-types'
 import {
+  buildMobileAgentHistoryResumeActionState,
   buildMobileAgentHistoryCard,
   isSessionInActiveWorktree
 } from './agent-history-session-card'
@@ -54,6 +55,22 @@ describe('buildMobileAgentHistoryCard', () => {
     const card = buildMobileAgentHistoryCard(session({ title: '' }), null, NOW)
     expect(card.title).toBe('Untitled session')
     expect(card.isCurrentWorktree).toBe(false)
+  })
+})
+
+describe('buildMobileAgentHistoryResumeActionState', () => {
+  it('disables all resume buttons while one session is launching', () => {
+    const state = buildMobileAgentHistoryResumeActionState(
+      [session({ id: 'claude:1' }), session({ id: 'codex:2', agent: 'codex' })],
+      'codex:2'
+    )
+    expect(state.get('claude:1')).toEqual({ disabled: true, loading: false })
+    expect(state.get('codex:2')).toEqual({ disabled: true, loading: true })
+  })
+
+  it('keeps resume buttons enabled when no launch is in flight', () => {
+    const state = buildMobileAgentHistoryResumeActionState([session({ id: 'claude:1' })], null)
+    expect(state.get('claude:1')).toEqual({ disabled: false, loading: false })
   })
 })
 
