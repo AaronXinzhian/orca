@@ -75,6 +75,7 @@ import {
 } from '../../../../src/session/session-panel-host'
 import { useMobilePrBranchContext } from '../../../../src/session/use-mobile-pr-branch-context'
 import { SessionDockColumn } from '../../../../src/session/SessionDockColumn'
+import { MobileSessionHeaderIconButton } from '../../../../src/session/MobileSessionHeaderIconButton'
 import { MOBILE_AI_VAULT_CAPABILITY } from '../../../../src/agent-history/agent-history-capability'
 import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
@@ -207,7 +208,6 @@ import {
 } from '../../../../src/session/mobile-session-create-warning-state'
 import { colors, spacing } from '../../../../src/theme/mobile-theme'
 import { styles } from './mobile-session-styles'
-import { MobileSessionHeaderIconButton } from './mobile-session-header-icon-button'
 import type { DiffComment } from '../../../../../src/shared/types'
 import type {
   DiffCommentActions,
