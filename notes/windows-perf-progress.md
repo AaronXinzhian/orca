@@ -38,10 +38,27 @@ Fixes on this branch (PR #7080 merged in — WebGL release on dispose + stale pt
 - F: daemon boots a throwaway `cmd.exe /c exit` ConPTY (windows-conpty-warmup.ts) so the
   first user terminal doesn't pay the ~2.7s first-ConPTY cost.
 
-Follow-ups (documented, not in this branch): gate/scope the light-tab-switch atlas burst
-(see #7058/#7073 history first); renderer-side tab-create cost (defer WebGL attach for
-brand-new panes?); cold-restore respawn fan-out concurrency cap; node-pty ≥1.2.0-beta
-deferred conpty connect (spawn returns pid=0 fast, stops daemon-loop serialization).
+Follow-ups (documented, not in this branch):
+- Gate/scope the light-tab-switch atlas burst (see #7058/#7073 history first). Residual
+  tab-switch cost besides the burst: debounced ResizeObserver re-fit can reflow scrollback
+  when column count changed while hidden.
+- Renderer-side tab-create cost (~400ms): mount chain runs new Terminal() + 5 eager addons
+  + synchronous attachWebgl (pane-lifecycle.ts:108) before the spawn IPC (deferred one rAF,
+  pty-connection.ts:5158). Candidate: defer WebGL attach for brand-new panes.
+- Cold-restore respawn fan-out: reconnectPersistedTerminals does NOT spawn; the fan-out is
+  Terminal.tsx mounting a TerminalPane per restored tab at once — each fires connectPanePty
+  → rAF-deferred spawn IPC (pty-connection.ts:5158) with no concurrency cap. Cap belongs at
+  that renderer connect layer, not in reconnectPersistedTerminals.
+- First terminal opened immediately after launch also waits on the one-time daemon-init
+  barrier (pty:spawn awaits getLocalPtyStartupPromise, ipc/pty.ts:2518; measured
+  preflight=0 in the bench because hydration had finished first, but an early Ctrl+T pays
+  it). In-daemon Windows shell resolution (pwsh -Version probe, PowerShell exe-chain
+  existsSync/statSync scan) is uncached per spawn; the conpty warm-up spawns cmd.exe so it
+  does not warm PowerShell resolution. Note the warm-up and an early first spawn serialize
+  on the daemon's single thread — the 1255ms post-fix first-spawn number is mostly queueing
+  behind the in-flight warm-up, not unwarmed cost.
+- node-pty ≥1.2.0-beta defers conpty connect (spawn returns pid=0 fast) — would stop spawn
+  storms serializing the daemon loop.
 
 Pre-existing Windows-only test failures (also on main, CI is ubuntu-only): 5 attribution-shim
 PATH assertions in src/main/ipc/pty.test.ts (path-separator artifacts).
