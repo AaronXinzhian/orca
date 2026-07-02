@@ -8938,6 +8938,7 @@ export class OrcaRuntimeService {
         linkedPR = { number: meta.linkedPR, state: 'unknown' }
       }
       const terminalPlatform = repo ? this.getAgentLaunchPlatformForRepo(repo) : process.platform
+      const lineage = this.store?.getWorktreeLineage?.(worktree.id)
       summaries.set(worktree.id, {
         // Why: mobile mirrors desktop workspace grouping/order from persisted
         // metadata, while older runtimes may not have hydrated every field yet.
@@ -8952,12 +8953,21 @@ export class OrcaRuntimeService {
         isArchived: worktree.isArchived,
         isMainWorktree: worktree.isMainWorktree,
         hasHostSidebarActivity: false,
-        parentWorktreeId: worktree.parentWorktreeId,
+        ...(worktree.instanceId !== undefined ? { worktreeInstanceId: worktree.instanceId } : {}),
+        ...(lineage?.worktreeInstanceId !== undefined
+          ? { lineageWorktreeInstanceId: lineage.worktreeInstanceId }
+          : {}),
+        ...(lineage?.parentWorktreeInstanceId !== undefined
+          ? { parentWorktreeInstanceId: lineage.parentWorktreeInstanceId }
+          : {}),
+        parentWorktreeId: lineage?.parentWorktreeId ?? worktree.parentWorktreeId,
         childWorktreeIds: worktree.childWorktreeIds,
         displayName: worktree.displayName,
         workspaceStatus: meta?.workspaceStatus ?? DEFAULT_WORKSPACE_STATUS_ID,
         sortOrder: meta?.sortOrder ?? 0,
         ...(meta?.manualOrder !== undefined ? { manualOrder: meta.manualOrder } : {}),
+        lastActivityAt: worktree.lastActivityAt,
+        ...(worktree.createdAt !== undefined ? { createdAt: worktree.createdAt } : {}),
         linkedIssue: worktree.linkedIssue,
         linkedPR,
         linkedLinearIssue: meta?.linkedLinearIssue ?? null,
@@ -8997,12 +9007,15 @@ export class OrcaRuntimeService {
         isArchived: worktree.isArchived,
         isMainWorktree: worktree.isMainWorktree,
         hasHostSidebarActivity: false,
+        ...(worktree.instanceId !== undefined ? { worktreeInstanceId: worktree.instanceId } : {}),
         parentWorktreeId: null,
         childWorktreeIds: [],
         displayName: worktree.displayName,
         workspaceStatus: worktree.workspaceStatus ?? DEFAULT_WORKSPACE_STATUS_ID,
         sortOrder: worktree.sortOrder ?? 0,
         ...(worktree.manualOrder !== undefined ? { manualOrder: worktree.manualOrder } : {}),
+        lastActivityAt: worktree.lastActivityAt,
+        ...(worktree.createdAt !== undefined ? { createdAt: worktree.createdAt } : {}),
         linkedIssue: worktree.linkedIssue ?? null,
         linkedPR: null,
         linkedLinearIssue: worktree.linkedLinearIssue ?? null,

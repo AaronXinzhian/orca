@@ -14,12 +14,17 @@ export type Worktree = {
   workspaceStatus?: string
   sortOrder?: number
   manualOrder?: number
+  lastActivityAt?: number
+  createdAt?: number
   // Why: on-disk worktree directory path. Needed by NewWorktreeModal so the
   // marine-creature fallback dedupes against filesystem basenames.
   path: string
   isArchived?: boolean
   isMainWorktree?: boolean
   hasHostSidebarActivity?: boolean
+  worktreeInstanceId?: string
+  lineageWorktreeInstanceId?: string
+  parentWorktreeInstanceId?: string
   parentWorktreeId?: string | null
   childWorktreeIds?: string[]
   lineageDepth?: number

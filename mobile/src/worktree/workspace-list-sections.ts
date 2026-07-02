@@ -9,8 +9,10 @@ import { applyMobileWorkspaceLineage } from './mobile-workspace-lineage'
 import { getPRGroupKey, PR_GROUP_LABELS, PR_GROUP_ORDER } from './workspace-pr-status-groups'
 import type { FilterState, Section, Worktree } from './workspace-list-types'
 import type { MobileGroupMode, MobileSortMode } from './workspace-view-settings'
+import { sortWorktrees } from './workspace-list-ordering'
 
 export type { FilterState, Section, Worktree } from './workspace-list-types'
+export { CREATE_GRACE_MS, getWorktreeStatus, sortWorktrees } from './workspace-list-ordering'
 
 function makeSection(
   key: string,
@@ -29,29 +31,6 @@ function makeSection(
       sectionListKey: `${key}:${worktree.worktreeId}`
     }))
   }
-}
-
-export function getWorktreeStatus(
-  w: Worktree
-): 'working' | 'active' | 'permission' | 'done' | 'inactive' {
-  // Why: desktop's sidebar activity is the parity source. Runtime status may
-  // still report retained/background PTYs as active after desktop hides them.
-  if (w.hasHostSidebarActivity === false) {
-    return 'inactive'
-  }
-  if (w.status && w.status !== 'inactive') {
-    return w.status
-  }
-  if (w.hasHostSidebarActivity === true) {
-    return 'active'
-  }
-  if (w.status) {
-    return w.status
-  }
-  if (w.liveTerminalCount > 0) {
-    return 'active'
-  }
-  return 'inactive'
 }
 
 // Why: the previous 10-minute lastOutputAt window was too strict — most
@@ -86,65 +65,12 @@ function isDefaultBranchWorkspace(w: Worktree): boolean {
   return branch === 'main' || branch === 'master'
 }
 
-function getManualSortRank(worktree: Worktree): number | null {
-  const rank = worktree.manualOrder ?? worktree.sortOrder
-  return typeof rank === 'number' && Number.isFinite(rank) ? rank : null
-}
-
-export function sortWorktrees(worktrees: Worktree[], mode: MobileSortMode): Worktree[] {
-  if (mode === 'manual') {
-    return [...worktrees].sort((a, b) => {
-      const aRank = getManualSortRank(a)
-      const bRank = getManualSortRank(b)
-      if (aRank !== null && bRank !== null && aRank !== bRank) {
-        // Why: desktop assigns higher sort/manual ranks to earlier list positions.
-        return bRank - aRank
-      }
-      if (aRank !== null && bRank === null) {
-        return -1
-      }
-      if (aRank === null && bRank !== null) {
-        return 1
-      }
-      return 0
-    })
+function orderMainWorktreeFirst(worktrees: Worktree[]): Worktree[] {
+  const mainWorktrees = worktrees.filter((worktree) => worktree.isMainWorktree)
+  if (mainWorktrees.length === 0) {
+    return worktrees
   }
-  return [...worktrees].sort((a, b) => {
-    if (mode === 'name') {
-      return (a.displayName || a.repo).localeCompare(b.displayName || b.repo)
-    }
-    if (mode === 'recent') {
-      return (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0)
-    }
-    if (mode === 'repo') {
-      const repoComparison = a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' })
-      return repoComparison || (a.displayName || a.repo).localeCompare(b.displayName || b.repo)
-    }
-    if (mode === 'smart') {
-      const aRank =
-        typeof a.sortOrder === 'number' && Number.isFinite(a.sortOrder) ? a.sortOrder : 0
-      const bRank =
-        typeof b.sortOrder === 'number' && Number.isFinite(b.sortOrder) ? b.sortOrder : 0
-      if (aRank !== bRank) {
-        // Why: desktop persists its computed Agent activity order into sortOrder;
-        // mobile should render that source-of-truth before local fallback signals.
-        return bRank - aRank
-      }
-    }
-    if (a.unread !== b.unread) {
-      return a.unread ? -1 : 1
-    }
-    const aStatus = getWorktreeStatus(a)
-    const bStatus = getWorktreeStatus(b)
-    const statusOrder = { permission: 0, working: 1, done: 2, active: 3, inactive: 4 }
-    if (statusOrder[aStatus] !== statusOrder[bStatus]) {
-      return statusOrder[aStatus] - statusOrder[bStatus]
-    }
-    if ((a.lastOutputAt ?? 0) !== (b.lastOutputAt ?? 0)) {
-      return (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0)
-    }
-    return (a.displayName || a.repo).localeCompare(b.displayName || b.repo)
-  })
+  return [...mainWorktrees, ...worktrees.filter((worktree) => !worktree.isMainWorktree)]
 }
 
 export function filterWorktrees(
@@ -166,7 +92,7 @@ export function filterWorktrees(
     const q = search.toLowerCase()
     result = result.filter(
       (w) =>
-        (w.displayName || w.repo).toLowerCase().includes(q) ||
+        w.displayName.toLowerCase().includes(q) ||
         w.branch.toLowerCase().includes(q) ||
         w.repo.toLowerCase().includes(q)
     )
@@ -249,7 +175,9 @@ export function buildSections(
     }
     for (const [repo, items] of byRepo) {
       const key = `repo:${repoIdsByName.get(repo) ?? repo}`
-      sections.push(makeSection(key, repo, items, undefined, collapsedGroups))
+      sections.push(
+        makeSection(key, repo, orderMainWorktreeFirst(items), undefined, collapsedGroups)
+      )
     }
   } else if (groupMode === 'workspaceStatus') {
     const renderableWorkspaceStatuses = coerceMobileWorkspaceStatuses(workspaceStatuses)

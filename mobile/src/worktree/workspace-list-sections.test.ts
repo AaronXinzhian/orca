@@ -1,7 +1,13 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Worktree } from './workspace-list-sections'
-import { buildSections, filterWorktrees, getWorktreeStatus } from './workspace-list-sections'
+import {
+  CREATE_GRACE_MS,
+  buildSections,
+  filterWorktrees,
+  getWorktreeStatus,
+  sortWorktrees
+} from './workspace-list-sections'
 import { DEFAULT_MOBILE_WORKSPACE_STATUSES } from './mobile-workspace-statuses'
 
 function worktree(overrides: Partial<Worktree> = {}): Worktree {
@@ -145,6 +151,16 @@ describe('getWorktreeStatus', () => {
 })
 
 describe('buildSections', () => {
+  it('matches desktop Name sort by display name', () => {
+    const beta = worktree({ worktreeId: 'beta', displayName: 'Beta', repo: 'aaa' })
+    const alpha = worktree({ worktreeId: 'alpha', displayName: 'Alpha', repo: 'zzz' })
+
+    expect(sortWorktrees([beta, alpha], 'name').map((item) => item.worktreeId)).toEqual([
+      'alpha',
+      'beta'
+    ])
+  })
+
   it('uses desktop manual order ranks in Manual sort mode', () => {
     const low = worktree({ worktreeId: 'low', displayName: 'low', manualOrder: 10 })
     const high = worktree({ worktreeId: 'high', displayName: 'high', manualOrder: 30 })
@@ -165,6 +181,16 @@ describe('buildSections', () => {
       'high',
       'fallback',
       'low'
+    ])
+  })
+
+  it('uses desktop display-name tie-breaks in Manual sort mode', () => {
+    const zed = worktree({ worktreeId: 'zed', displayName: 'Zed', manualOrder: 10 })
+    const alpha = worktree({ worktreeId: 'alpha', displayName: 'Alpha', manualOrder: 10 })
+
+    expect(sortWorktrees([zed, alpha], 'manual').map((item) => item.worktreeId)).toEqual([
+      'alpha',
+      'zed'
     ])
   })
 
@@ -201,6 +227,83 @@ describe('buildSections', () => {
       'desktop-first',
       'mobile-fallback-first'
     ])
+  })
+
+  it('uses desktop display-name tie-breaks for equal persisted smart ranks', () => {
+    const zed = worktree({ worktreeId: 'zed', displayName: 'Zed', sortOrder: 20, unread: true })
+    const alpha = worktree({
+      worktreeId: 'alpha',
+      displayName: 'Alpha',
+      sortOrder: 20,
+      status: 'working',
+      lastOutputAt: 100
+    })
+
+    expect(sortWorktrees([zed, alpha], 'smart').map((item) => item.worktreeId)).toEqual([
+      'alpha',
+      'zed'
+    ])
+  })
+
+  it('matches desktop Recent sort using lastActivityAt instead of terminal output', () => {
+    const newerActivity = worktree({
+      worktreeId: 'newer-activity',
+      displayName: 'newer',
+      lastActivityAt: 200,
+      lastOutputAt: 1
+    })
+    const louderTerminal = worktree({
+      worktreeId: 'louder-terminal',
+      displayName: 'louder',
+      lastActivityAt: 100,
+      lastOutputAt: 1_000
+    })
+
+    expect(
+      sortWorktrees([louderTerminal, newerActivity], 'recent').map((item) => item.worktreeId)
+    ).toEqual(['newer-activity', 'louder-terminal'])
+  })
+
+  it('matches desktop Recent create grace for newly-created workspaces', () => {
+    const now = 10_000
+    const created = worktree({
+      worktreeId: 'created',
+      displayName: 'created',
+      lastActivityAt: 100,
+      createdAt: now - 1_000
+    })
+    const active = worktree({
+      worktreeId: 'active',
+      displayName: 'active',
+      lastActivityAt: now + CREATE_GRACE_MS - 2_000
+    })
+
+    expect(sortWorktrees([active, created], 'recent', now).map((item) => item.worktreeId)).toEqual([
+      'created',
+      'active'
+    ])
+  })
+
+  it('matches desktop Repo sort by repo display name then workspace display name', () => {
+    const betaAlpha = worktree({
+      worktreeId: 'beta-alpha',
+      repo: 'Beta Repo',
+      displayName: 'Alpha'
+    })
+    const alphaZed = worktree({
+      worktreeId: 'alpha-zed',
+      repo: 'Alpha Repo',
+      displayName: 'Zed'
+    })
+    const betaBravo = worktree({
+      worktreeId: 'beta-bravo',
+      repo: 'Beta Repo',
+      displayName: 'Bravo'
+    })
+
+    expect(
+      sortWorktrees([betaBravo, betaAlpha, alphaZed], 'repo').map((item) => item.worktreeId)
+    ).toEqual(['alpha-zed', 'beta-alpha', 'beta-bravo'])
   })
 
   it('keeps a desktop-ranked parent and child stack above unrelated active rows', () => {
@@ -242,6 +345,35 @@ describe('buildSections', () => {
 
     expect(sections[0]?.data.map((item) => item.worktreeId)).toEqual(['parent', 'child', 'active'])
     expect(sections[0]?.data.map((item) => item.lineageDepth)).toEqual([0, 1, 0])
+  })
+
+  it('keeps the main workspace first inside repo-grouped sections like desktop', () => {
+    const child = worktree({
+      worktreeId: 'child',
+      displayName: 'Child',
+      repo: 'orca',
+      sortOrder: 30,
+      isMainWorktree: false
+    })
+    const main = worktree({
+      worktreeId: 'main',
+      displayName: 'Main',
+      repo: 'orca',
+      sortOrder: 10,
+      isMainWorktree: true
+    })
+
+    const sections = buildSections(
+      [child, main],
+      'smart',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'repo',
+      new Set(),
+      new Map([['orca', 'repo-1']])
+    )
+
+    expect(sections[0]?.data.map((item) => item.worktreeId)).toEqual(['main', 'child'])
   })
 
   it('renders empty repo sections from repo placeholders in repo grouping', () => {
