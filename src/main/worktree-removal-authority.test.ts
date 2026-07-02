@@ -80,15 +80,7 @@ describe('canCleanupUnregisteredOrcaWorktreeDirectory', () => {
     ).toBe(false)
   })
 
-  it('does not trust nested workspace paths without legacy metadata', () => {
-    expect(
-      canCleanupUnregisteredOrcaWorktreeDirectory({
-        meta: undefined
-      })
-    ).toBe(false)
-  })
-
-  it('does not trust flat workspace-root paths without legacy metadata', () => {
+  it('does not trust paths without provenance or legacy metadata', () => {
     expect(
       canCleanupUnregisteredOrcaWorktreeDirectory({
         meta: undefined
