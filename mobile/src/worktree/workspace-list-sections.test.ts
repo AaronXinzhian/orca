@@ -515,7 +515,7 @@ describe('buildSections', () => {
     expect(sections[0]?.data.map((worktree) => worktree.worktreeId)).toEqual(['progress'])
   })
 
-  it('does not duplicate pinned worktrees in their canonical status group', () => {
+  it('keeps pinned worktrees in their canonical status group like desktop', () => {
     const pinned = worktree({
       worktreeId: 'pinned',
       workspaceStatus: 'in-progress',
@@ -534,7 +534,40 @@ describe('buildSections', () => {
     )
 
     expect(withoutSectionListKeys(sections)).toEqual([
-      { key: 'pinned', title: 'Pinned', icon: 'pin', data: [pinned] }
+      { key: 'pinned', title: 'Pinned', icon: 'pin', data: [pinned] },
+      { key: 'workspace-status:in-progress', title: 'In progress', data: [pinned] }
+    ])
+  })
+
+  it('renders one sorted All section when grouping is off like desktop', () => {
+    const inactiveFirst = worktree({
+      worktreeId: 'inactive-first',
+      displayName: 'inactive-first',
+      manualOrder: 30,
+      status: 'inactive'
+    })
+    const activeSecond = worktree({
+      worktreeId: 'active-second',
+      displayName: 'active-second',
+      manualOrder: 10,
+      status: 'working'
+    })
+
+    const sections = buildSections(
+      [activeSecond, inactiveFirst],
+      'manual',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'none',
+      new Set(),
+      new Map(),
+      DEFAULT_MOBILE_WORKSPACE_STATUSES
+    )
+
+    expect(sections.map((section) => section.key)).toEqual(['all'])
+    expect(sections[0]?.data.map((worktree) => worktree.worktreeId)).toEqual([
+      'inactive-first',
+      'active-second'
     ])
   })
 

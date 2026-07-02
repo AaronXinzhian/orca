@@ -119,12 +119,9 @@ export function buildSections(
   const sorted = sortWorktrees(filtered, sortMode)
 
   const pinned = sorted.filter((w) => isWorktreePinned(w, pinnedIds))
-  const unpinned = sorted.filter((w) => !isWorktreePinned(w, pinnedIds))
-  // Why: mobile shows pinned workspaces once in the pinned section; duplicating
-  // them in status/project sections makes the phone list harder to scan.
-  const canonicalGroupWorktrees = unpinned
-  const active = canonicalGroupWorktrees.filter(isWorktreeActive)
-  const inactive = canonicalGroupWorktrees.filter((w) => !isWorktreeActive(w))
+  // Why: desktop treats Pinned as an overlay. Keeping pinned rows in canonical
+  // groups preserves exact cross-surface order and literal section counts.
+  const canonicalGroupWorktrees = sorted
 
   const sections: Section[] = []
   if (pinned.length > 0) {
@@ -132,19 +129,8 @@ export function buildSections(
   }
 
   if (groupMode === 'none') {
-    if (active.length > 0) {
-      sections.push(makeSection('all-active', 'Active', active, undefined, collapsedGroups))
-    }
-    if (inactive.length > 0) {
-      sections.push(
-        makeSection(
-          'all',
-          pinned.length > 0 || active.length > 0 ? 'All' : '',
-          inactive,
-          undefined,
-          collapsedGroups
-        )
-      )
+    if (canonicalGroupWorktrees.length > 0) {
+      sections.push(makeSection('all', 'All', canonicalGroupWorktrees, undefined, collapsedGroups))
     }
   } else if (groupMode === 'repo') {
     const byRepo = new Map<string, Worktree[]>()
