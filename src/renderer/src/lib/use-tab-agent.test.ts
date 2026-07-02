@@ -78,6 +78,15 @@ function twoPaneLayout(): TerminalLayoutSnapshot {
   }
 }
 
+function singlePaneLayout(ptyId: string): TerminalLayoutSnapshot {
+  return {
+    root: { type: 'leaf', leafId: LEAF_ID },
+    activeLeafId: LEAF_ID,
+    expandedLeafId: null,
+    ptyIdsByLeafId: { [LEAF_ID]: ptyId }
+  }
+}
+
 describe('resolveTabAgentFromSignals', () => {
   it('uses a recognized foreground agent as the live local source of truth', () => {
     expect(
@@ -729,6 +738,52 @@ describe('useTabAgent', () => {
     expect(getForegroundProcess).toHaveBeenCalledExactlyOnceWith('pty-1')
   })
 
+  it('re-reads foreground when focused hook lifecycle changes without a title or PTY change', async () => {
+    const paneKey = makePaneKey('tab-1', LEAF_ID)
+    getForegroundProcess.mockResolvedValueOnce('claude').mockResolvedValueOnce('codex')
+    useAppStore.setState({
+      terminalLayoutsByTabId: { 'tab-1': singlePaneLayout('pty-1') },
+      agentStatusByPaneKey: {
+        [paneKey]: {
+          ...workingAgentStatus(paneKey),
+          agentType: 'claude',
+          stateStartedAt: 1,
+          terminalTitle: 'Claude'
+        }
+      }
+    })
+
+    await renderHookProbe({ ...baseTab, title: 'Claude', launchAgent: 'claude' })
+
+    expect(latestHookAgent).toBe('claude')
+    expect(useAppStore.getState().foregroundAgentByPaneKey[paneKey]).toMatchObject({
+      agent: 'claude',
+      ptyId: 'pty-1'
+    })
+    expect(getForegroundProcess).toHaveBeenCalledExactlyOnceWith('pty-1')
+
+    await act(async () => {
+      useAppStore.setState({
+        agentStatusByPaneKey: {
+          [paneKey]: {
+            ...workingAgentStatus(paneKey),
+            agentType: 'codex',
+            stateStartedAt: 2,
+            terminalTitle: 'Claude'
+          }
+        }
+      })
+    })
+    await flushHookEffects()
+
+    expect(getForegroundProcess).toHaveBeenCalledTimes(2)
+    expect(latestHookAgent).toBe('codex')
+    expect(useAppStore.getState().foregroundAgentByPaneKey[paneKey]).toMatchObject({
+      agent: 'codex',
+      ptyId: 'pty-1'
+    })
+  })
+
   it('treats paired runtime PTYs as remote-like for completed hook fallback', async () => {
     const paneKey = makePaneKey('tab-1', LEAF_ID)
     useAppStore.setState({
@@ -747,6 +802,38 @@ describe('useTabAgent', () => {
 
     expect(latestHookAgent).toBe('codex')
     expect(getForegroundProcess).not.toHaveBeenCalled()
+    expect(useAppStore.getState().foregroundAgentByPaneKey).toEqual({})
+  })
+
+  it('uses provider-routed SSH foreground identity as the active tab source of truth', async () => {
+    const paneKey = makePaneKey('tab-1', LEAF_ID)
+    const sshPtyId = 'ssh:connection-1@@pty-1'
+    getForegroundProcess.mockResolvedValueOnce('codex')
+    useAppStore.setState({
+      ptyIdsByTabId: { 'tab-1': [sshPtyId] },
+      terminalLayoutsByTabId: { 'tab-1': singlePaneLayout(sshPtyId) },
+      agentStatusByPaneKey: {
+        [paneKey]: {
+          ...workingAgentStatus(paneKey),
+          agentType: 'claude',
+          terminalTitle: 'Claude'
+        }
+      }
+    })
+
+    await renderHookProbe({
+      ...baseTab,
+      ptyId: sshPtyId,
+      title: 'Claude',
+      launchAgent: 'claude'
+    })
+
+    expect(getForegroundProcess).toHaveBeenCalledExactlyOnceWith(sshPtyId)
+    expect(latestHookAgent).toBe('codex')
+    expect(useAppStore.getState().foregroundAgentByPaneKey[paneKey]).toMatchObject({
+      agent: 'codex',
+      ptyId: sshPtyId
+    })
   })
 
   it('does not let a split-tab fallback PTY suppress missing-layout hook identity', async () => {

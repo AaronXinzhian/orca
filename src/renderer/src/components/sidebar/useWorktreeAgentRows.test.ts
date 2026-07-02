@@ -156,6 +156,40 @@ describe('buildWorktreeAgentRows', () => {
     expect(rows[0].agentType).toBe('codex')
   })
 
+  it('keeps explicit hook identity over a conflicting title without foreground proof', () => {
+    const rows = buildWorktreeAgentRows({
+      tabs: [makeTab('tab-1', { launchAgent: 'claude', title: '\u280b Codex' })],
+      entries: [
+        makeEntry(PANE_KEY_1, 1000, {
+          state: 'working',
+          agentType: 'claude',
+          terminalTitle: '\u280b Codex'
+        })
+      ],
+      retained: [],
+      now: 2000
+    })
+
+    expect(rows[0].agentType).toBe('claude')
+  })
+
+  it('keeps explicit hook identity over launch metadata without foreground proof', () => {
+    const rows = buildWorktreeAgentRows({
+      tabs: [makeTab('tab-1', { launchAgent: 'codex', title: '\u280b dottyback' })],
+      entries: [
+        makeEntry(PANE_KEY_1, 1000, {
+          state: 'working',
+          agentType: 'claude',
+          terminalTitle: '\u280b dottyback'
+        })
+      ],
+      retained: [],
+      now: 2000
+    })
+
+    expect(rows[0].agentType).toBe('claude')
+  })
+
   it('normalizes live Pi-compatible rows from the launched OMP tab agent', () => {
     const rows = buildWorktreeAgentRows({
       tabs: [makeTab('tab-1', { launchAgent: 'omp', title: '\u280b Pi' })],

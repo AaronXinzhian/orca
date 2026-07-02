@@ -9,6 +9,7 @@ import {
   selectRuntimePaneTitlesForWorktree
 } from './worktree-card-status-inputs'
 import { buildWorktreeAgentRows } from './worktree-agent-rows'
+import { useWorktreeForegroundAgentSync } from './use-worktree-foreground-agent-sync'
 import {
   selectLiveAgentStatusEntriesForWorktree,
   selectMigrationUnsupportedEntriesForWorktree,
@@ -16,6 +17,7 @@ import {
   selectRetainedAgentEntriesForWorktree,
   selectTerminalLayoutsForWorktree
 } from './worktree-agent-row-selectors'
+import { selectForegroundAgentsForWorktree } from './worktree-foreground-agent-row-selectors'
 
 export { buildWorktreeAgentRows } from './worktree-agent-rows'
 export {
@@ -24,6 +26,7 @@ export {
   selectRuntimeAgentOrchestrationForWorktree,
   selectRetainedAgentEntriesForWorktree
 } from './worktree-agent-row-selectors'
+export { selectForegroundAgentsForWorktree } from './worktree-foreground-agent-row-selectors'
 
 /**
  * Narrow per-worktree agent row hook used by the WorktreeCard inline agents
@@ -35,7 +38,11 @@ export {
  * store slice and then shared by every visible card, avoiding O(cards × agents)
  * selector work on high-frequency agent status pings.
  */
-export function useWorktreeAgentRows(worktreeId: string, active = true): DashboardAgentRow[] {
+export function useWorktreeAgentRows(
+  worktreeId: string,
+  active = true,
+  syncForeground = active
+): DashboardAgentRow[] {
   const tabs = useAppStore((s) => (active ? s.tabsByWorktree[worktreeId] : undefined))
   // Why: narrow the subscriptions to only THIS worktree's entries via
   // useShallow. Subscribing to the whole agentStatusByPaneKey map would make
@@ -63,8 +70,20 @@ export function useWorktreeAgentRows(worktreeId: string, active = true): Dashboa
   const terminalLayoutsByTabId = useAppStore(
     useShallow((s) => (active ? selectTerminalLayoutsForWorktree(s, worktreeId) : {}))
   )
+  useWorktreeForegroundAgentSync(
+    worktreeId,
+    tabs,
+    liveEntries,
+    runtimePaneTitlesByTabId,
+    ptyIdsByTabId,
+    terminalLayoutsByTabId,
+    active && syncForeground
+  )
   const runtimeAgentOrchestrationByPaneKey = useAppStore(
     useShallow((s) => (active ? selectRuntimeAgentOrchestrationForWorktree(s, worktreeId) : {}))
+  )
+  const foregroundAgentByPaneKey = useAppStore(
+    useShallow((s) => (active ? selectForegroundAgentsForWorktree(s, worktreeId) : {}))
   )
   // Why: agentStatusEpoch is included in the dependency array (but not in the
   // computation itself) so the memo recomputes when freshness boundaries
@@ -98,6 +117,7 @@ export function useWorktreeAgentRows(worktreeId: string, active = true): Dashboa
         runtimePaneTitlesByTabId,
         ptyIdsByTabId,
         terminalLayoutsByTabId,
+        foregroundAgentByPaneKey,
         runtimeAgentOrchestrationByPaneKey,
         now
       })
@@ -112,6 +132,7 @@ export function useWorktreeAgentRows(worktreeId: string, active = true): Dashboa
     runtimePaneTitlesByTabId,
     ptyIdsByTabId,
     terminalLayoutsByTabId,
+    foregroundAgentByPaneKey,
     runtimeAgentOrchestrationByPaneKey,
     agentStatusEpoch
   ])

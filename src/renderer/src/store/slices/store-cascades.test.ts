@@ -1839,6 +1839,13 @@ describe('setActiveWorktree', () => {
       runtimePaneTitlesByTabId: {
         [orphanId]: { 1: 'stale' }
       },
+      foregroundAgentByPaneKey: {
+        [`${orphanId}:11111111-1111-4111-8111-111111111111`]: {
+          agent: 'codex',
+          ptyId: 'pty-orphan',
+          updatedAt: 123
+        }
+      },
       terminalLayoutsByTabId: {
         [orphanId]: makeLayout()
       },
@@ -1873,6 +1880,9 @@ describe('setActiveWorktree', () => {
     expect(s.tabsByWorktree[wt]?.map((tab) => tab.id)).toEqual([replacement.id])
     expect(s.ptyIdsByTabId[orphanId]).toBeUndefined()
     expect(s.runtimePaneTitlesByTabId[orphanId]).toBeUndefined()
+    expect(Object.keys(s.foregroundAgentByPaneKey)).not.toContain(
+      `${orphanId}:11111111-1111-4111-8111-111111111111`
+    )
     expect(s.terminalLayoutsByTabId[orphanId]).toBeUndefined()
     expect(s.pendingStartupByTabId[orphanId]).toBeUndefined()
     expect(s.automaticAgentResumeClaimsByTabId[orphanId]).toBeUndefined()
@@ -2274,6 +2284,18 @@ describe('setActiveWorktree', () => {
       unreadTerminalTabs: {
         [tabA.id]: true as const,
         [tabB.id]: true as const
+      },
+      foregroundAgentByPaneKey: {
+        [`${tabA.id}:11111111-1111-4111-8111-111111111111`]: {
+          agent: 'codex',
+          ptyId: 'pty-a',
+          updatedAt: 1
+        },
+        [`${tabB.id}:22222222-2222-4222-8222-222222222222`]: {
+          agent: 'claude',
+          ptyId: 'pty-b',
+          updatedAt: 1
+        }
       }
     })
 
@@ -2282,6 +2304,7 @@ describe('setActiveWorktree', () => {
     const s = store.getState()
     expect(s.unreadTerminalTabs[tabA.id]).toBeUndefined()
     expect(s.unreadTerminalTabs[tabB.id]).toBeUndefined()
+    expect(Object.keys(s.foregroundAgentByPaneKey)).toEqual([])
   })
 
   // Why: ownership regression (design §1.3). shutdownWorktreeTerminals used to
@@ -2767,6 +2790,10 @@ describe('shutdownWorktreeTerminals (sleep) — agent status hygiene', () => {
       unreadTerminalTabs: { 'tab-1': true },
       unreadTerminalPanes: { [targetPaneKey]: true, [siblingPaneKey]: true },
       unreadAgentCompletionPanes: { [targetPaneKey]: true, [siblingPaneKey]: true },
+      foregroundAgentByPaneKey: {
+        [targetPaneKey]: { agent: 'codex', ptyId: 'pty-agent', updatedAt: 2200 },
+        [siblingPaneKey]: { agent: 'claude', ptyId: 'pty-shell', updatedAt: 2300 }
+      },
       lastTerminalInputAtByPaneKey: { [targetPaneKey]: 1000, [siblingPaneKey]: 1100 },
       pendingSetupSplitByTabId: { 'tab-1': { command: 'setup', direction: 'horizontal' } },
       pendingIssueCommandSplitByTabId: { 'tab-1': { command: 'issue' } }
@@ -2835,6 +2862,11 @@ describe('shutdownWorktreeTerminals (sleep) — agent status hygiene', () => {
     expect(state.unreadAgentCompletionPanes[siblingPaneKey]).toBe(true)
     expect(state.lastTerminalInputAtByPaneKey[targetPaneKey]).toBeUndefined()
     expect(state.lastTerminalInputAtByPaneKey[siblingPaneKey]).toBe(1100)
+    expect(state.foregroundAgentByPaneKey[targetPaneKey]).toBeUndefined()
+    expect(state.foregroundAgentByPaneKey[siblingPaneKey]).toMatchObject({
+      agent: 'claude',
+      ptyId: 'pty-shell'
+    })
     expect(state.pendingSetupSplitByTabId['tab-1']).toBeDefined()
     expect(state.pendingIssueCommandSplitByTabId['tab-1']).toBeDefined()
     expect(dropByWorktree).not.toHaveBeenCalled()

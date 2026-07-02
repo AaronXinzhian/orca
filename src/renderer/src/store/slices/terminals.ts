@@ -299,6 +299,12 @@ export type AutomaticAgentResumeClaim = {
   providerSession: AgentProviderSessionMetadata
 }
 
+export type TerminalForegroundAgentEntry = {
+  agent: TuiAgent
+  ptyId: string
+  updatedAt: number
+}
+
 export type TerminalSlice = {
   tabsByWorktree: Record<string, TerminalTab[]>
   activeTabId: string | null
@@ -328,6 +334,7 @@ export type TerminalSlice = {
     string,
     { previousAccountLabel: string; nextAccountLabel: string }
   >
+  foregroundAgentByPaneKey: Record<string, TerminalForegroundAgentEntry>
   expandedPaneByTabId: Record<string, boolean>
   canExpandPaneByTabId: Record<string, boolean>
   terminalLayoutsByTabId: Record<string, TerminalLayoutSnapshot>
@@ -449,6 +456,8 @@ export type TerminalSlice = {
   setActiveTab: (tabId: string) => void
   setActiveTabForWorktree: (worktreeId: string, tabId: string) => void
   updateTabTitle: (tabId: string, title: string) => void
+  setForegroundAgentForPane: (paneKey: string, entry: TerminalForegroundAgentEntry) => void
+  clearForegroundAgentForPane: (paneKey: string) => void
   setGeneratedTabTitleFromAgentPrompt: (paneKey: string, prompt: string) => void
   clearTabLaunchAgent: (tabId: string) => void
   setRuntimePaneTitle: (tabId: string, paneId: number, title: string) => void
@@ -591,6 +600,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   suppressedPtyExitIds: {},
   pendingCodexPaneRestartIds: {},
   codexRestartNoticeByPtyId: {},
+  foregroundAgentByPaneKey: {},
   expandedPaneByTabId: {},
   canExpandPaneByTabId: {},
   terminalLayoutsByTabId: {},
@@ -1015,6 +1025,15 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       delete nextLastKnownRelay[tabId]
       const nextRuntimePaneTitlesByTabId = { ...s.runtimePaneTitlesByTabId }
       delete nextRuntimePaneTitlesByTabId[tabId]
+      let nextForegroundAgentByPaneKey = s.foregroundAgentByPaneKey
+      for (const paneKey of Object.keys(s.foregroundAgentByPaneKey)) {
+        if (paneKey.startsWith(`${tabId}:`)) {
+          if (nextForegroundAgentByPaneKey === s.foregroundAgentByPaneKey) {
+            nextForegroundAgentByPaneKey = { ...s.foregroundAgentByPaneKey }
+          }
+          delete nextForegroundAgentByPaneKey[paneKey]
+        }
+      }
       // Why: preserve the unreadTerminalTabs reference when the closing tab had
       // no unread flag — avoids a no-op top-level state allocation that would
       // force re-evaluation of full-state selectors on unrelated closeTab calls.
@@ -1111,6 +1130,9 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         ptyIdsByTabId: nextPtyIdsByTabId,
         lastKnownRelayPtyIdByTabId: nextLastKnownRelay,
         runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
+        ...(nextForegroundAgentByPaneKey !== s.foregroundAgentByPaneKey
+          ? { foregroundAgentByPaneKey: nextForegroundAgentByPaneKey }
+          : {}),
         // Why: skip writing unreadTerminalTabs when the reference is unchanged —
         // avoids a no-op top-level state allocation that would force re-evaluation
         // of full-state selectors. Mirrors the sibling pattern in tabs.ts.
@@ -1423,6 +1445,37 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       nextTabs[tabIndex] = tabWithoutLaunchAgent
       scheduleRuntimeGraphSync()
       return { tabsByWorktree: { ...s.tabsByWorktree, [ownerWorktreeId]: nextTabs } }
+    })
+  },
+
+  setForegroundAgentForPane: (paneKey, entry) => {
+    set((s) => {
+      const current = s.foregroundAgentByPaneKey[paneKey]
+      if (
+        current &&
+        current.agent === entry.agent &&
+        current.ptyId === entry.ptyId &&
+        current.updatedAt === entry.updatedAt
+      ) {
+        return s
+      }
+      return {
+        foregroundAgentByPaneKey: {
+          ...s.foregroundAgentByPaneKey,
+          [paneKey]: entry
+        }
+      }
+    })
+  },
+
+  clearForegroundAgentForPane: (paneKey) => {
+    set((s) => {
+      if (!s.foregroundAgentByPaneKey[paneKey]) {
+        return s
+      }
+      const next = { ...s.foregroundAgentByPaneKey }
+      delete next[paneKey]
+      return { foregroundAgentByPaneKey: next }
     })
   },
 
@@ -1965,9 +2018,11 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const nextUnreadTerminalPanes = { ...s.unreadTerminalPanes }
       const nextUnreadAgentCompletionPanes = { ...s.unreadAgentCompletionPanes }
       const nextLastTerminalInputAtByPaneKey = { ...s.lastTerminalInputAtByPaneKey }
+      const nextForegroundAgentByPaneKey = { ...s.foregroundAgentByPaneKey }
       delete nextUnreadTerminalPanes[opts.paneKey]
       delete nextUnreadAgentCompletionPanes[opts.paneKey]
       delete nextLastTerminalInputAtByPaneKey[opts.paneKey]
+      delete nextForegroundAgentByPaneKey[opts.paneKey]
 
       return {
         tabsByWorktree: nextTabsByWorktree,
@@ -1986,7 +2041,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           : {}),
         unreadTerminalPanes: nextUnreadTerminalPanes,
         unreadAgentCompletionPanes: nextUnreadAgentCompletionPanes,
-        lastTerminalInputAtByPaneKey: nextLastTerminalInputAtByPaneKey
+        lastTerminalInputAtByPaneKey: nextLastTerminalInputAtByPaneKey,
+        foregroundAgentByPaneKey: nextForegroundAgentByPaneKey
       }
     })
 
@@ -2192,6 +2248,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       let nextUnreadTerminalPanes = s.unreadTerminalPanes
       let nextUnreadAgentCompletionPanes = s.unreadAgentCompletionPanes
       let nextLastTerminalInputAtByPaneKey = s.lastTerminalInputAtByPaneKey
+      let nextForegroundAgentByPaneKey = s.foregroundAgentByPaneKey
       for (const tab of tabs) {
         if (!keepIdentifiers) {
           delete nextRuntimePaneTitlesByTabId[tab.id]
@@ -2226,6 +2283,14 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
               nextLastTerminalInputAtByPaneKey = { ...s.lastTerminalInputAtByPaneKey }
             }
             delete nextLastTerminalInputAtByPaneKey[paneKey]
+          }
+        }
+        for (const paneKey of Object.keys(nextForegroundAgentByPaneKey)) {
+          if (paneKey.startsWith(`${tab.id}:`)) {
+            if (nextForegroundAgentByPaneKey === s.foregroundAgentByPaneKey) {
+              nextForegroundAgentByPaneKey = { ...s.foregroundAgentByPaneKey }
+            }
+            delete nextForegroundAgentByPaneKey[paneKey]
           }
         }
         if (!keepIdentifiers) {
@@ -2278,6 +2343,9 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           : {}),
         ...(nextLastTerminalInputAtByPaneKey !== s.lastTerminalInputAtByPaneKey
           ? { lastTerminalInputAtByPaneKey: nextLastTerminalInputAtByPaneKey }
+          : {}),
+        ...(nextForegroundAgentByPaneKey !== s.foregroundAgentByPaneKey
+          ? { foregroundAgentByPaneKey: nextForegroundAgentByPaneKey }
           : {})
       }
     })

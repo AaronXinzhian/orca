@@ -5849,6 +5849,18 @@ describe('purgeWorktreeTerminalState direct (design §4.4)', () => {
       },
       ptyIdsByTabId: { 'tab-1': ['pty-1'], 'tab-2': ['pty-2'], 'tab-3': ['pty-3'] },
       runtimePaneTitlesByTabId: { 'tab-1': 'claude', 'tab-3': 'bash' },
+      foregroundAgentByPaneKey: {
+        'tab-1:11111111-1111-4111-8111-111111111111': {
+          agent: 'codex',
+          ptyId: 'pty-1',
+          updatedAt: 1
+        },
+        'tab-3:33333333-3333-4333-8333-333333333333': {
+          agent: 'claude',
+          ptyId: 'pty-3',
+          updatedAt: 1
+        }
+      },
       automaticAgentResumeClaimsByTabId: {
         'tab-1': {
           worktreeId: 'repoA::/a/wt1',
@@ -5914,6 +5926,13 @@ describe('purgeWorktreeTerminalState direct (design §4.4)', () => {
     expect(s.terminalLayoutsByTabId).toEqual({ 'tab-3': { panes: [] } })
     expect(s.ptyIdsByTabId).toEqual({ 'tab-3': ['pty-3'] })
     expect(s.runtimePaneTitlesByTabId).toEqual({ 'tab-3': 'bash' })
+    expect(s.foregroundAgentByPaneKey).toEqual({
+      'tab-3:33333333-3333-4333-8333-333333333333': {
+        agent: 'claude',
+        ptyId: 'pty-3',
+        updatedAt: 1
+      }
+    })
     expect(s.automaticAgentResumeClaimsByTabId).toEqual({
       'tab-3': {
         worktreeId: 'repoA::/a/wt2',

@@ -6,6 +6,7 @@ import type {
 import type { TerminalTab } from '../../../../shared/types'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 import { makePaneKey } from '../../../../shared/stable-pane-id'
+import { selectForegroundAgentsForWorktree } from './worktree-foreground-agent-row-selectors'
 import {
   selectLiveAgentStatusEntriesForWorktree,
   selectMigrationUnsupportedEntriesForWorktree,
@@ -149,6 +150,43 @@ describe('selectLiveAgentStatusEntriesForWorktree', () => {
     }
 
     expect(selectLiveAgentStatusEntriesForWorktree(state, 'wt-1')).toEqual([childEntry])
+  })
+})
+
+describe('selectForegroundAgentsForWorktree', () => {
+  it('reuses unaffected worktree buckets when another foreground entry changes', () => {
+    const wt1Foreground = { agent: 'codex' as const, ptyId: 'pty-1', updatedAt: 1000 }
+    const wt2Foreground = { agent: 'claude' as const, ptyId: 'pty-2', updatedAt: 1000 }
+    const state = {
+      tabsByWorktree: {
+        'wt-1': [makeTab('tab-1')],
+        'wt-2': [makeTab('tab-2')]
+      },
+      foregroundAgentByPaneKey: {
+        [PANE_KEY_1]: wt1Foreground,
+        [PANE_KEY_2]: wt2Foreground
+      }
+    }
+
+    const firstWt1 = selectForegroundAgentsForWorktree(state, 'wt-1')
+    const firstWt2 = selectForegroundAgentsForWorktree(state, 'wt-2')
+    const nextWt2Foreground = { ...wt2Foreground, updatedAt: 1100 }
+    const nextState = {
+      ...state,
+      foregroundAgentByPaneKey: {
+        [PANE_KEY_1]: wt1Foreground,
+        [PANE_KEY_2]: nextWt2Foreground
+      }
+    }
+
+    const secondWt1 = selectForegroundAgentsForWorktree(nextState, 'wt-1')
+    const secondWt2 = selectForegroundAgentsForWorktree(nextState, 'wt-2')
+
+    // Why: one foreground transition should bucket once per store snapshot, not
+    // make every visible WorktreeCard allocate a fresh foreground map.
+    expect(secondWt1).toBe(firstWt1)
+    expect(secondWt2).not.toBe(firstWt2)
+    expect(secondWt2[PANE_KEY_2]).toBe(nextWt2Foreground)
   })
 })
 

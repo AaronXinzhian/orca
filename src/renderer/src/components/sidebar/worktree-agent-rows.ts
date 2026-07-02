@@ -1,9 +1,9 @@
 import type { DashboardAgentRow } from '@/components/dashboard/useDashboardData'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
+import type { TerminalForegroundAgentEntry } from '@/store/slices/terminals'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
-  type AgentType,
   type AgentStatusEntry,
   type AgentStatusOrchestrationContext
 } from '../../../../shared/agent-status-types'
@@ -18,33 +18,14 @@ import type {
   TerminalTab
 } from '../../../../shared/types'
 import { resolveRuntimePaneTitleLeafId } from '@/lib/runtime-pane-title-leaf-id'
-import {
-  buildTitleDerivedAgentRows,
-  resolveAgentTypeFromTerminalTitle
-} from './worktree-title-derived-agent-rows'
-import { resolveCompatibleAgentTypeForOwner } from '../../../../shared/agent-title-owner'
+import { buildTitleDerivedAgentRows } from './worktree-title-derived-agent-rows'
 import { compareWorktreeAgentRows } from './worktree-agent-row-order'
 import {
   effectiveWorktreeAgentRowStartedAt,
   tabFromWorktreeAttributedStatusEntry
 } from './worktree-agent-row-fallback-tab'
-
-/**
- * Resolves the sidebar row agent type, prioritizing launch agent configuration
- * and normalizing compatible agent kinds.
- */
-function resolveRowAgentType(entry: AgentStatusEntry, tab?: TerminalTab | null): AgentType {
-  const entryAgentType = resolveCompatibleAgentTypeForOwner(entry.agentType, tab?.launchAgent)
-  if (entryAgentType && entryAgentType !== 'unknown') {
-    return entryAgentType
-  }
-  return (
-    resolveAgentTypeFromTerminalTitle(entry.terminalTitle ?? tab?.title, tab?.launchAgent) ??
-    tab?.launchAgent ??
-    entryAgentType ??
-    'unknown'
-  )
-}
+import { resolveRowAgentType } from './worktree-agent-row-agent-type'
+import { buildForegroundDerivedAgentRows } from './worktree-foreground-derived-agent-rows'
 
 function orchestrationContextsEqual(
   a: AgentStatusOrchestrationContext,
@@ -207,6 +188,7 @@ export function buildWorktreeAgentRows(args: {
   runtimePaneTitlesByTabId?: Record<string, Record<number, string>>
   ptyIdsByTabId?: Record<string, string[]>
   terminalLayoutsByTabId?: Record<string, TerminalLayoutSnapshot | undefined>
+  foregroundAgentByPaneKey?: Record<string, TerminalForegroundAgentEntry | undefined>
   runtimeAgentOrchestrationByPaneKey?: Record<string, AgentStatusOrchestrationContext>
   now: number
 }): DashboardAgentRow[] {
@@ -243,7 +225,13 @@ export function buildWorktreeAgentRows(args: {
         paneKey: rowEntry.paneKey,
         entry: rowEntry,
         tab,
-        agentType: resolveRowAgentType(rowEntry, tab),
+        agentType: resolveRowAgentType({
+          entry: rowEntry,
+          tab,
+          foregroundAgentByPaneKey: args.foregroundAgentByPaneKey,
+          ptyIdsByTabId: args.ptyIdsByTabId,
+          terminalLayoutsByTabId: args.terminalLayoutsByTabId
+        }),
         rowSource: 'live',
         state: shouldDecay ? 'idle' : rowEntry.state,
         startedAt
@@ -261,7 +249,22 @@ export function buildWorktreeAgentRows(args: {
     seenPaneKeys
   })
 
-  rows.push(...buildTitleDerivedAgentRows({ ...args, seenPaneKeys }))
+  rows.push(
+    ...buildTitleDerivedAgentRows({
+      ...args,
+      seenPaneKeys
+    })
+  )
+
+  rows.push(
+    ...buildForegroundDerivedAgentRows({
+      foregroundAgentByPaneKey: args.foregroundAgentByPaneKey,
+      ptyIdsByTabId: args.ptyIdsByTabId,
+      seenPaneKeys,
+      tabs: args.tabs,
+      terminalLayoutsByTabId: args.terminalLayoutsByTabId
+    })
+  )
 
   // Why: orchestration workers can be attributed to a worktree by main before
   // their tab is present in this renderer. Keep those live rows visible in the
@@ -284,7 +287,7 @@ export function buildWorktreeAgentRows(args: {
       paneKey: rowEntry.paneKey,
       entry: rowEntry,
       tab,
-      agentType: resolveRowAgentType(rowEntry, tab),
+      agentType: resolveRowAgentType({ entry: rowEntry, tab }),
       rowSource: 'live',
       state: shouldDecay ? 'idle' : rowEntry.state,
       startedAt
@@ -313,7 +316,7 @@ export function buildWorktreeAgentRows(args: {
       paneKey: rowEntry.paneKey,
       entry: rowEntry,
       tab: ra.tab,
-      agentType: resolveRowAgentType(rowEntry, ra.tab),
+      agentType: resolveRowAgentType({ entry: rowEntry, tab: ra.tab }),
       rowSource: 'retained',
       state: 'done',
       startedAt: ra.startedAt

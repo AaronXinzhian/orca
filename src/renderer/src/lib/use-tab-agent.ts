@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '@/store'
 import { recognizeAgentProcess } from '../../../shared/agent-process-recognition'
 import { isShellProcess } from '../../../shared/agent-detection'
-import { worktreeUsesRemoteConnection } from '@/store/slices/terminals'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
+import { isTerminalLeafId, makePaneKey } from '../../../shared/stable-pane-id'
+import { getTitleForegroundKey } from '../../../shared/terminal-foreground-title-key'
 import {
   resolveFocusedCompletedTabAgent,
   resolveFocusedTabAgent,
@@ -17,24 +18,10 @@ import type { TerminalTab, TuiAgent } from '../../../shared/types'
 export { resolveExplicitTerminalTitleAgentType as resolveTabAgentFromTitle } from '../../../shared/terminal-title-agent-type'
 
 const HELPER_FOREGROUND_RETRY_DELAYS_MS = [250, 1250, 3500, 750] as const
+const ACTIVE_FOREGROUND_PANE_SEPARATOR = '\u0000'
 
-function getTitleForegroundKey(title: string, launchAgent?: TuiAgent): string {
-  const titleAgent = launchAgent ? null : resolveExplicitTerminalTitleAgentType(title)
-  if (titleAgent) {
-    return `agent:${titleAgent}`
-  }
-  if (isShellProcess(title)) {
-    return 'shell'
-  }
-  const stableTitle = title
-    .trim()
-    .toLowerCase()
-    // Why: unknown agents may still animate leading status glyphs. Include the
-    // stable title body so first launch from "Terminal 1" triggers one poll,
-    // without polling on every spinner frame.
-    .replace(/^(?:[✳✦⏲◇✋⠀-⣿]+|[.*]\s)\s*/, '')
-    .slice(0, 48)
-  return `unknown:${stableTitle}`
+function paneKeyForTerminalLeaf(tabId: string, leafId: string | null | undefined): string | null {
+  return leafId && isTerminalLeafId(leafId) ? makePaneKey(tabId, leafId) : null
 }
 
 export function resolveTabAgentFromSignals(args: {
@@ -103,12 +90,12 @@ export function resolveTabAgentFromSignals(args: {
  * 1. Live foreground process — the ground truth for what's running *now*: the
  *    only signal that reverts to the terminal glyph when the agent exits to a
  *    shell, or flips when a different agent starts in the same pane. Checked
- *    event-driven (only when the tab's title changes — exactly when an agent
- *    starts/exits/takes a turn), never on an interval, and only for local panes
- *    (SSH foreground inspection is a 15s-timeout RPC). A recognized agent wins;
- *    a recognized shell authoritatively means "no agent".
+ *    event-driven (when the tab's title or focused hook lifecycle changes —
+ *    exactly when an agent starts/exits/takes a turn), never on an interval,
+ *    and only for provider-routable panes. A recognized agent wins; a
+ *    recognized shell authoritatively means "no agent".
  * 2. Hook status — accurate provider identity from native integrations, and
- *    available for SSH/remote panes where foreground polling is too costly.
+ *    available when foreground inspection is unsupported.
  * 3. launchAgent — what Orca launched here; instant bootstrap before hooks or
  *    foreground polling arrive, and the owned identity for startup windows.
  * 4. Title — legacy/unknown-session fallback, and the live override when a pane
@@ -143,17 +130,39 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
   const clearTabLaunchAgent = useAppStore((s) => s.clearTabLaunchAgent)
 
   // The focused pane's PTY (single-pane tabs have exactly one leaf).
-  const ptyId = useAppStore((s) => {
+  const activeForegroundPaneKey = useAppStore((s) => {
     const layout = s.terminalLayoutsByTabId[tab.id]
-    const activeLeafId = layout?.activeLeafId
+    const activeLeafId =
+      layout?.activeLeafId ?? (layout?.root?.type === 'leaf' ? layout.root.leafId : null)
     const leafPty = activeLeafId ? layout?.ptyIdsByLeafId?.[activeLeafId] : undefined
-    if (leafPty) {
-      return leafPty
-    }
     const ptyIds = s.ptyIdsByTabId[tab.id] ?? []
+    const ptyId = activeLeafId && leafPty && ptyIds.includes(leafPty) ? leafPty : null
+    if (ptyId) {
+      return `${ptyId}${ACTIVE_FOREGROUND_PANE_SEPARATOR}${paneKeyForTerminalLeaf(tab.id, activeLeafId) ?? ''}`
+    }
     // Why: without a focused leaf, a split tab's first PTY can be a sibling
     // shell. Only single-PTY fallback foreground is authoritative.
-    return ptyIds.length === 1 ? ptyIds[0]! : null
+    const fallbackPtyId = ptyIds.length === 1 ? ptyIds[0]! : ''
+    const fallbackPaneKey =
+      ptyIds.length === 1 ? (paneKeyForTerminalLeaf(tab.id, activeLeafId) ?? '') : ''
+    return `${fallbackPtyId}${ACTIVE_FOREGROUND_PANE_SEPARATOR}${fallbackPaneKey}`
+  })
+  const [ptyIdRaw, foregroundPaneKeyRaw] = activeForegroundPaneKey.split(
+    ACTIVE_FOREGROUND_PANE_SEPARATOR
+  )
+  const ptyId = ptyIdRaw || null
+  const foregroundPaneKey = foregroundPaneKeyRaw || null
+  const foregroundLifecycleKey = useAppStore((s) => {
+    if (!foregroundPaneKey) {
+      return 'none'
+    }
+    const entry = s.agentStatusByPaneKey[foregroundPaneKey]
+    if (!entry) {
+      return 'none'
+    }
+    // Why: hook lifecycle transitions can signal a foreground change even when
+    // the PTY and terminal title are unchanged.
+    return `${entry.state}:${entry.stateStartedAt}:${entry.agentType}:${entry.terminalTitle ?? ''}`
   })
   const hasRemoteRuntimePty = useAppStore((s) => {
     const layout = s.terminalLayoutsByTabId[tab.id]
@@ -163,8 +172,9 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
     }
     return [...ptyIds].some((ptyId) => parseRemoteRuntimePtyId(ptyId) !== null)
   })
-  const isRemoteWorktree = useAppStore((s) => worktreeUsesRemoteConnection(s, tab.worktreeId))
-  const isRemoteLike = isRemoteWorktree || hasRemoteRuntimePty
+  const isRemoteLike = hasRemoteRuntimePty
+  const setForegroundAgentForPane = useAppStore((s) => s.setForegroundAgentForPane)
+  const clearForegroundAgentForPane = useAppStore((s) => s.clearForegroundAgentForPane)
 
   // undefined = no conclusive local reading (defer to title/hook/launchAgent);
   // null = foreground is a shell; TuiAgent = recognized agent process.
@@ -180,6 +190,14 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
     hasObservedAgentSignalRef.current = false
     setShellForegroundAfterAgentSignal(false)
   }, [ptyId, isRemoteLike])
+
+  useEffect(() => {
+    return () => {
+      if (foregroundPaneKey) {
+        clearForegroundAgentForPane(foregroundPaneKey)
+      }
+    }
+  }, [clearForegroundAgentForPane, foregroundPaneKey, isRemoteLike, ptyId])
 
   useEffect(() => {
     const fallbackAgentSignal =
@@ -210,6 +228,9 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
         })
         .catch(() => {
           if (!cancelled) {
+            if (foregroundPaneKey) {
+              clearForegroundAgentForPane(foregroundPaneKey)
+            }
             setForeground(undefined)
           }
         })
@@ -235,13 +256,26 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
         hasObservedAgentSignalRef.current = true
         setHasObservedAgentSignal(true)
         setForeground(recognized.agent)
+        if (foregroundPaneKey) {
+          setForegroundAgentForPane(foregroundPaneKey, {
+            agent: recognized.agent,
+            ptyId: localPtyId,
+            updatedAt: Date.now()
+          })
+        }
       } else if (process && isShellProcess(process)) {
         setShellForegroundAfterAgentSignal(hasObservedAgentSignalRef.current)
         setForeground(null)
+        if (foregroundPaneKey) {
+          clearForegroundAgentForPane(foregroundPaneKey)
+        }
         if (tab.launchAgent && !hasObservedAgentSignalRef.current) {
           scheduleHelperForegroundRetry(retryIndex)
         }
       } else {
+        if (foregroundPaneKey && hasObservedAgentSignalRef.current) {
+          clearForegroundAgentForPane(foregroundPaneKey)
+        }
         if (process && tab.launchAgent) {
           // Why: for Orca-owned launches, an unrecognized non-shell process
           // is enough lifecycle evidence to clear launch intent when the pane
@@ -260,7 +294,16 @@ export function useTabAgent(tab: TerminalTab): TuiAgent | null {
       cancelled = true
       helperForegroundRetryTimers.forEach((timer) => window.clearTimeout(timer))
     }
-  }, [ptyId, isRemoteLike, tab.launchAgent, titleForegroundKey])
+  }, [
+    clearForegroundAgentForPane,
+    foregroundLifecycleKey,
+    foregroundPaneKey,
+    isRemoteLike,
+    ptyId,
+    setForegroundAgentForPane,
+    tab.launchAgent,
+    titleForegroundKey
+  ])
 
   useEffect(() => {
     if (!tab.launchAgent) {

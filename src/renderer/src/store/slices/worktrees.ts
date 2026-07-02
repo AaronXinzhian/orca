@@ -1900,6 +1900,18 @@ function buildWorktreePurgeState(s: AppState, worktreeIds: string[]): Partial<Ap
     }
     return changed ? out : obj
   }
+  const omitPaneKeysByTabId = <T>(obj: Record<string, T>): Record<string, T> => {
+    let changed = false
+    const out = { ...obj }
+    for (const paneKey of Object.keys(out)) {
+      const tabId = paneKey.slice(0, paneKey.indexOf(':'))
+      if (doomedTabIds.has(tabId)) {
+        delete out[paneKey]
+        changed = true
+      }
+    }
+    return changed ? out : obj
+  }
   const omitByBrowserWorkspaceId = <T>(obj: Record<string, T>): Record<string, T> => {
     let changed = false
     const out = { ...obj }
@@ -1968,6 +1980,7 @@ function buildWorktreePurgeState(s: AppState, worktreeIds: string[]): Partial<Ap
     terminalLayoutsByTabId: omitByTabId(s.terminalLayoutsByTabId),
     ptyIdsByTabId: omitByTabId(s.ptyIdsByTabId),
     runtimePaneTitlesByTabId: omitByTabId(s.runtimePaneTitlesByTabId),
+    foregroundAgentByPaneKey: omitPaneKeysByTabId(s.foregroundAgentByPaneKey),
     automaticAgentResumeClaimsByTabId: omitByTabId(s.automaticAgentResumeClaimsByTabId),
     // Delete state
     deleteStateByWorktreeId: omitByWorktree(s.deleteStateByWorktreeId),
@@ -3052,6 +3065,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         const nextLayouts = { ...s.terminalLayoutsByTabId }
         const nextPtyIdsByTabId = { ...s.ptyIdsByTabId }
         const nextRuntimePaneTitlesByTabId = { ...s.runtimePaneTitlesByTabId }
+        const nextForegroundAgentByPaneKey = { ...s.foregroundAgentByPaneKey }
         const nextAutomaticAgentResumeClaimsByTabId = {
           ...s.automaticAgentResumeClaimsByTabId
         }
@@ -3059,6 +3073,11 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           delete nextLayouts[tabId]
           delete nextPtyIdsByTabId[tabId]
           delete nextRuntimePaneTitlesByTabId[tabId]
+          for (const paneKey of Object.keys(nextForegroundAgentByPaneKey)) {
+            if (paneKey.startsWith(`${tabId}:`)) {
+              delete nextForegroundAgentByPaneKey[paneKey]
+            }
+          }
           delete nextAutomaticAgentResumeClaimsByTabId[tabId]
         }
         const nextDeleteState = { ...s.deleteStateByWorktreeId }
@@ -3204,6 +3223,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           tabsByWorktree: nextTabs,
           ptyIdsByTabId: nextPtyIdsByTabId,
           runtimePaneTitlesByTabId: nextRuntimePaneTitlesByTabId,
+          foregroundAgentByPaneKey: nextForegroundAgentByPaneKey,
           automaticAgentResumeClaimsByTabId: nextAutomaticAgentResumeClaimsByTabId,
           terminalLayoutsByTabId: nextLayouts,
           deleteStateByWorktreeId: nextDeleteState,

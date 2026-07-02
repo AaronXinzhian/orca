@@ -62,7 +62,9 @@ export function ReviewNotesSendMenuContent({
   const ptyIdsByTabId = useAppStore(useShallow((s) => selectLivePtyIdsForWorktree(s, worktreeId)))
   const runtimePaneTitlesByTabId = useAppStore((s) => s.runtimePaneTitlesByTabId)
   const agentStatusEpoch = useAppStore((s) => s.agentStatusEpoch)
-  const agentRows = useWorktreeAgentRows(worktreeId)
+  // Why: the menu reads agent rows for targeting; visible WorktreeCard rows
+  // own foreground probing so transient menus don't add IPC or clear cache.
+  const agentRows = useWorktreeAgentRows(worktreeId, true, false)
   const now = useNow(30_000)
   const sendTargets = useMemo(() => {
     void agentStatusEpoch

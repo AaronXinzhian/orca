@@ -1,4 +1,5 @@
 import type { DashboardAgentRow } from '@/components/dashboard/useDashboardData'
+import type { TerminalForegroundAgentEntry } from '@/store/slices/terminals'
 import {
   detectAgentStatusFromTitle,
   getAgentLabel,
@@ -21,6 +22,7 @@ import {
   normalizeCompatibleAgentTitleForOwner,
   resolveCompatibleAgentTypeForOwner
 } from '../../../../shared/agent-title-owner'
+import { resolveWorktreeForegroundAgentType } from './worktree-foreground-agent-row-type'
 
 const EMPTY_RUNTIME_TITLES: Record<string, Record<number, string>> = {}
 const EMPTY_LIVE_PTY_IDS: Record<string, string[]> = {}
@@ -51,6 +53,7 @@ export function buildTitleDerivedAgentRows(args: {
   runtimePaneTitlesByTabId?: Record<string, Record<number, string>>
   ptyIdsByTabId?: Record<string, string[]>
   terminalLayoutsByTabId?: Record<string, TerminalLayoutSnapshot | undefined>
+  foregroundAgentByPaneKey?: Record<string, TerminalForegroundAgentEntry | undefined>
   runtimeAgentOrchestrationByPaneKey?: Record<string, AgentStatusOrchestrationContext>
   seenPaneKeys: Set<string>
   now: number
@@ -92,7 +95,7 @@ export function buildTitleDerivedAgentRows(args: {
         if (!row || args.seenPaneKeys.has(row.paneKey)) {
           continue
         }
-        rows.push(row)
+        rows.push(rowWithForegroundAgentType(row, args))
         args.seenPaneKeys.add(row.paneKey)
       }
       continue
@@ -112,11 +115,37 @@ export function buildTitleDerivedAgentRows(args: {
     if (!row || args.seenPaneKeys.has(row.paneKey)) {
       continue
     }
-    rows.push(row)
+    rows.push(rowWithForegroundAgentType(row, args))
     args.seenPaneKeys.add(row.paneKey)
   }
 
   return rows
+}
+
+function rowWithForegroundAgentType(
+  row: DashboardAgentRow,
+  args: Pick<
+    Parameters<typeof buildTitleDerivedAgentRows>[0],
+    'foregroundAgentByPaneKey' | 'ptyIdsByTabId' | 'terminalLayoutsByTabId'
+  >
+): DashboardAgentRow {
+  const foregroundAgentType = resolveWorktreeForegroundAgentType({
+    entry: row.entry,
+    tab: row.tab,
+    foregroundAgentByPaneKey: args.foregroundAgentByPaneKey,
+    ptyIdsByTabId: args.ptyIdsByTabId,
+    terminalLayoutsByTabId: args.terminalLayoutsByTabId
+  })
+  if (!foregroundAgentType) {
+    return row
+  }
+  // Why: title-only rows can carry stale provider identity; the local
+  // foreground process is the same source of truth used by the tab icon.
+  return {
+    ...row,
+    agentType: foregroundAgentType,
+    entry: { ...row.entry, agentType: foregroundAgentType }
+  }
 }
 
 /**
@@ -176,6 +205,22 @@ function buildTitleDerivedAgentRow(args: {
   }
 }
 
+export function titleCanBuildTitleDerivedAgentRow(
+  title: string,
+  ownerAgentType?: AgentType | null
+): boolean {
+  const normalizedTitle = normalizeCompatibleAgentTitleForOwner(title, ownerAgentType)
+  const isClaudeAgentsTitle = isClaudeManagementTitle(normalizedTitle)
+  const status = isClaudeAgentsTitle ? 'idle' : detectAgentStatusFromTitle(normalizedTitle)
+  const label = isClaudeAgentsTitle ? 'Claude Code' : getAgentLabel(normalizedTitle)
+  if (!status || !label) {
+    return false
+  }
+  return Boolean(
+    isClaudeAgentsTitle ? 'claude' : resolveTitleDerivedAgentType(normalizedTitle, label)
+  )
+}
+
 export function resolveTitleDerivedAgentType(title: string, label: string): AgentType | null {
   const agentType = TITLE_AGENT_LABEL_TO_TYPE[label] ?? 'unknown'
   if (agentType !== 'claude') {
@@ -220,7 +265,7 @@ function titleStatusToRowState(
   return 'idle'
 }
 
-function resolveLeafIdForTitleFallback(args: {
+export function resolveLeafIdForTitleFallback(args: {
   layout: TerminalLayoutSnapshot | undefined
   paneTitleEntries: [string, string][]
   paneId: number
