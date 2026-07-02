@@ -39,6 +39,7 @@ import type { IPtyProvider, PtySpawnOptions, PtySpawnResult } from '../providers
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
 import { SSH_SESSION_EXPIRED_ERROR, isSshPtyNotFoundError } from '../providers/ssh-pty-provider'
 import { parseAppSshPtyId, toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
+import { createPtySpawnTiming } from './pty-spawn-timing'
 import { mintPtySessionId, isSafePtySessionId } from '../daemon/pty-session-id'
 import { addNodePtyRecoveryHint } from '../daemon/node-pty-error-hints'
 import type { ClaudeRuntimeAuthPreparation } from '../claude-accounts/runtime-auth-service'
@@ -2515,11 +2516,13 @@ export function registerPtyHandlers(
         }
       }
     ) => {
+      const spawnTiming = createPtySpawnTiming()
       const startupPromise = getLocalPtyStartupPromise(args.connectionId)
       if (startupPromise) {
         await startupPromise
       }
       await assertFolderWorkspacePtyPathUsable(args.worktreeId)
+      spawnTiming.mark('preflight')
       const provider = getProvider(args.connectionId)
       const isClaudeLaunch = !args.connectionId && isClaudeLaunchCommand(args.command)
       if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
@@ -2542,6 +2545,7 @@ export function registerPtyHandlers(
       )
       const claudeAuth =
         isClaudeLaunch && prepareClaudeAuth ? await prepareClaudeAuth(initialSelectionTarget) : null
+      spawnTiming.mark('auth')
       if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
         throw new Error('A Claude account switch is in progress. Try again after it finishes.')
       }
@@ -2767,6 +2771,7 @@ export function registerPtyHandlers(
           throw err
         }
       }
+      spawnTiming.mark('host_env')
       const spawnEnv = preAllocatedHandle
         ? { ...env, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
         : env
@@ -2861,7 +2866,9 @@ export function registerPtyHandlers(
               startupTerminalColorQueryReplyColors
             )
           }
+          spawnTiming.mark('options')
           result = await provider.spawn(spawnOptions)
+          spawnTiming.mark('provider_spawn')
         } catch (err) {
           const rawMessage = err instanceof Error ? err.message : String(err)
           const spawnError = normalizeNodePtySpawnError(err)
@@ -2922,6 +2929,10 @@ export function registerPtyHandlers(
             trustedTerminalHandleEnv.delete(preAllocatedHandle)
           }
         }
+        spawnTiming.log(result.id, {
+          daemon: isDaemonHostSpawn,
+          reattach: result.isReattach ?? false
+        })
         ptyOwnership.set(result.id, args.connectionId ?? null)
         if (startupTerminalColorQueryReplyColors) {
           if (result.isReattach) {
