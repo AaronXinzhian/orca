@@ -1,3 +1,4 @@
+import { getRendererAppPlatform } from '@/lib/renderer-app-platform'
 import type { ManagedPaneInternal } from './pane-manager-types'
 
 // Why: workspace switches used to dispose every hidden pane's WebGL context
@@ -6,6 +7,13 @@ import type { ManagedPaneInternal } from './pane-manager-types'
 // context budget raised to 128 (#7064), hidden panes can keep their contexts;
 // this LRU cap only bounds hidden-pane GPU memory.
 export const RETAINED_WEBGL_PANE_CAP = 16
+
+/** Windows-only: context re-creation is cheap on macOS/Linux GL, so hidden
+ *  panes there keep the long-proven dispose-on-hide behavior instead of
+ *  paying retention's GPU-memory cost for no perceptible switch latency win. */
+export function shouldRetainSuspendedWebglContexts(): boolean {
+  return getRendererAppPlatform() === 'win32'
+}
 
 // Insertion order doubles as LRU order: re-retaining deletes + re-adds.
 const retainedPanes = new Set<ManagedPaneInternal>()

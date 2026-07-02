@@ -66,16 +66,21 @@ function fireContextLoss(pane: ManagedPaneInternal): void {
   addon._onContextLoss.fire()
 }
 
-describe('terminal WebGL context retention across hide/show', () => {
+function stubCommonGlobals(userAgent: string): void {
+  vi.stubGlobal('navigator', { userAgent })
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callback(16)
+    return 1
+  })
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+}
+
+describe('terminal WebGL context retention across hide/show (Windows)', () => {
   beforeEach(() => {
     resetTerminalWebglSuggestion()
     clearRetainedWebglPanes()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      callback(16)
-      return 1
-    })
-    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    stubCommonGlobals('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
   })
 
   afterEach(() => {
@@ -191,5 +196,40 @@ describe('terminal WebGL context retention across hide/show', () => {
 
     expect(pane.webglDisabledAfterContextLoss).toBe(false)
     expect(pane.webglAddon).not.toBeNull()
+  })
+})
+
+describe('terminal WebGL context retention is Windows-only', () => {
+  beforeEach(() => {
+    resetTerminalWebglSuggestion()
+    clearRetainedWebglPanes()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    stubCommonGlobals('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')
+  })
+
+  afterEach(() => {
+    clearRetainedWebglPanes()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the dispose-on-hide behavior off Windows', () => {
+    const pane = createAttachedPane()
+
+    suspendPaneRendering([pane])
+
+    expect(pane.webglAttachmentDeferred).toBe(true)
+    expect(pane.webglAddon).toBeNull()
+    expect(retainedWebglPaneCount()).toBe(0)
+  })
+
+  it('re-attaches on resume off Windows as before', () => {
+    const pane = createAttachedPane()
+    suspendPaneRendering([pane])
+
+    resumePaneRendering([pane])
+
+    expect(pane.webglAddon).not.toBeNull()
+    expect(pane.terminal.loadAddon).toHaveBeenCalledTimes(2)
   })
 })

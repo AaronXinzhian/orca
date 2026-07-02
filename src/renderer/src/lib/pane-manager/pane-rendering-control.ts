@@ -7,7 +7,11 @@ import {
   markComplexScriptOutput,
   resetWebglTextureAtlas
 } from './pane-webgl-renderer'
-import { retainSuspendedWebglPane, unretainWebglPane } from './pane-webgl-context-retention'
+import {
+  retainSuspendedWebglPane,
+  shouldRetainSuspendedWebglContexts,
+  unretainWebglPane
+} from './pane-webgl-context-retention'
 import { reattachWebglIfNeeded } from './pane-webgl-reattach'
 
 export function setPaneGpuRenderingState(
@@ -44,12 +48,17 @@ export function markPaneComplexScriptOutput(
 }
 
 export function suspendPaneRendering(panes: Iterable<ManagedPaneInternal>): void {
+  const retainContexts = shouldRetainSuspendedWebglContexts()
   for (const pane of panes) {
-    // Why: deferred blocks NEW context creation while hidden; live contexts
-    // are retained (not disposed) so the return switch repaints instantly
-    // instead of paying ANGLE context re-creation. The LRU cap bounds how
-    // many hidden panes may keep one.
+    // Why: deferred blocks NEW context creation while hidden; on Windows,
+    // live contexts are retained (not disposed) so the return switch repaints
+    // instantly instead of paying ANGLE context re-creation. The LRU cap
+    // bounds how many hidden panes may keep one.
     pane.webglAttachmentDeferred = true
+    if (!retainContexts) {
+      disposeWebgl(pane)
+      continue
+    }
     for (const evicted of retainSuspendedWebglPane(pane)) {
       disposeWebgl(evicted)
     }
