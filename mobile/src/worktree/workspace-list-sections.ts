@@ -120,6 +120,17 @@ export function sortWorktrees(worktrees: Worktree[], mode: MobileSortMode): Work
       const repoComparison = a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' })
       return repoComparison || (a.displayName || a.repo).localeCompare(b.displayName || b.repo)
     }
+    if (mode === 'smart') {
+      const aRank =
+        typeof a.sortOrder === 'number' && Number.isFinite(a.sortOrder) ? a.sortOrder : 0
+      const bRank =
+        typeof b.sortOrder === 'number' && Number.isFinite(b.sortOrder) ? b.sortOrder : 0
+      if (aRank !== bRank) {
+        // Why: desktop persists its computed Agent activity order into sortOrder;
+        // mobile should render that source-of-truth before local fallback signals.
+        return bRank - aRank
+      }
+    }
     if (a.unread !== b.unread) {
       return a.unread ? -1 : 1
     }

@@ -168,6 +168,82 @@ describe('buildSections', () => {
     ])
   })
 
+  it('uses desktop-persisted smart order before mobile fallback signals', () => {
+    const desktopFirst = worktree({
+      worktreeId: 'desktop-first',
+      displayName: 'desktop-first',
+      sortOrder: 30,
+      status: 'inactive',
+      unread: false,
+      lastOutputAt: 1
+    })
+    const mobileFallbackFirst = worktree({
+      worktreeId: 'mobile-fallback-first',
+      displayName: 'mobile-fallback-first',
+      sortOrder: 10,
+      status: 'working',
+      unread: true,
+      lastOutputAt: 100
+    })
+
+    const sections = buildSections(
+      [mobileFallbackFirst, desktopFirst],
+      'smart',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'workspaceStatus',
+      new Set(),
+      new Map(),
+      DEFAULT_MOBILE_WORKSPACE_STATUSES
+    )
+
+    expect(sections.flatMap((section) => section.data.map((item) => item.worktreeId))).toEqual([
+      'desktop-first',
+      'mobile-fallback-first'
+    ])
+  })
+
+  it('keeps a desktop-ranked parent and child stack above unrelated active rows', () => {
+    const parent = worktree({
+      worktreeId: 'parent',
+      displayName: 'Add agents to mobile',
+      repo: 'orca',
+      sortOrder: 30,
+      status: 'inactive'
+    })
+    const child = worktree({
+      worktreeId: 'child',
+      displayName: 'Agent Session History resume (PR2)',
+      repo: 'orca',
+      parentWorktreeId: 'parent',
+      sortOrder: 20,
+      status: 'inactive'
+    })
+    const unrelatedActive = worktree({
+      worktreeId: 'active',
+      displayName: 'Overlapping tui output',
+      repo: 'orca',
+      sortOrder: 10,
+      status: 'working',
+      unread: true,
+      lastOutputAt: 100
+    })
+
+    const sections = buildSections(
+      [unrelatedActive, child, parent],
+      'smart',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'repo',
+      new Set(),
+      new Map([['orca', 'repo-1']]),
+      DEFAULT_MOBILE_WORKSPACE_STATUSES
+    )
+
+    expect(sections[0]?.data.map((item) => item.worktreeId)).toEqual(['parent', 'child', 'active'])
+    expect(sections[0]?.data.map((item) => item.lineageDepth)).toEqual([0, 1, 0])
+  })
+
   it('renders empty repo sections from repo placeholders in repo grouping', () => {
     const sections = buildSections(
       [worktree({ repoId: 'repo-1', repo: 'orca' })],
