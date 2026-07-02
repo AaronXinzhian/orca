@@ -306,6 +306,24 @@ describe('buildSections', () => {
     ).toEqual(['alpha-zed', 'beta-alpha', 'beta-bravo'])
   })
 
+  it('uses desktop localeCompare semantics for Repo sort names', () => {
+    const accentRepo = worktree({
+      worktreeId: 'accent-repo',
+      repo: 'áb repo',
+      displayName: 'Alpha'
+    })
+    const plainRepo = worktree({
+      worktreeId: 'plain-repo',
+      repo: 'ab repo',
+      displayName: 'Zed'
+    })
+
+    expect(sortWorktrees([accentRepo, plainRepo], 'repo').map((item) => item.worktreeId)).toEqual([
+      'plain-repo',
+      'accent-repo'
+    ])
+  })
+
   it('keeps a desktop-ranked parent and child stack above unrelated active rows', () => {
     const parent = worktree({
       worktreeId: 'parent',

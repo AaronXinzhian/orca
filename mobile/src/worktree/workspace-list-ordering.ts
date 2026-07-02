@@ -66,7 +66,7 @@ export function sortWorktrees(
       return compareByRecent(a, b, now)
     }
     if (mode === 'repo') {
-      const repoComparison = a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' })
+      const repoComparison = a.repo.localeCompare(b.repo)
       return repoComparison || compareDisplayName(a, b)
     }
     if (mode === 'smart') {
