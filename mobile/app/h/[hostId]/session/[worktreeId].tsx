@@ -76,7 +76,6 @@ import {
 import { useMobilePrBranchContext } from '../../../../src/session/use-mobile-pr-branch-context'
 import { SessionDockColumn } from '../../../../src/session/SessionDockColumn'
 import { MobileSessionHeaderIconButton } from '../../../../src/session/MobileSessionHeaderIconButton'
-import { MOBILE_AI_VAULT_CAPABILITY } from '../../../../src/agent-history/agent-history-capability'
 import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
 import {
@@ -1120,7 +1119,6 @@ export default function SessionScreen() {
     activeSessionTab?.type !== 'browser'
   const liveInputEnabled = activeHandle ? liveInputTerminalHandles.has(activeHandle) : false
   const [browserScreencastSupported, setBrowserScreencastSupported] = useState<boolean | null>(null)
-  const [agentHistorySupported, setAgentHistorySupported] = useState<boolean | null>(null)
   // Why: stable callbacks (handleFileTap) read the live value via this ref, since
   // the capability probe resolves after the callbacks are created.
   const browserScreencastSupportedRef = useRef(browserScreencastSupported)
@@ -2469,7 +2467,6 @@ export default function SessionScreen() {
   useEffect(() => {
     if (!client || connState !== 'connected') {
       setBrowserScreencastSupported(null)
-      setAgentHistorySupported(null)
       return
     }
     let stale = false
@@ -2483,12 +2480,10 @@ export default function SessionScreen() {
         setBrowserScreencastSupported(
           status.capabilities?.includes('browser.screencast.v1') === true
         )
-        setAgentHistorySupported(status.capabilities?.includes(MOBILE_AI_VAULT_CAPABILITY) === true)
       })
       .catch(() => {
         if (!stale) {
           setBrowserScreencastSupported(false)
-          setAgentHistorySupported(false)
         }
       })
     return () => {
@@ -4623,7 +4618,7 @@ export default function SessionScreen() {
                 onPress={() => handlePanelTap('sourceControl')}
               />
             )}
-            {!isFolderWorkspaceRoute && agentHistorySupported === true ? (
+            {!isFolderWorkspaceRoute ? (
               <MobileSessionHeaderIconButton
                 accessibilityLabel="Open agent session history"
                 icon={History}
