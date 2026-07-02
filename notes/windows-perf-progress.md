@@ -31,7 +31,9 @@ Findings (baseline, this machine):
 
 Fixes on this branch (PR #7080 merged in — WebGL release on dispose + stale pty:exit synthesis):
 - A: WebGL context retention across hide/show (pane-webgl-context-retention.ts, LRU cap 16;
-  suspend keeps live contexts; resume repaints instead of recreating).
+  suspend keeps live contexts; resume repaints instead of recreating). Gated to Windows
+  (getRendererAppPlatform() === 'win32'): macOS/Linux context creation is cheap, so they
+  keep dispose-on-hide and pay no retention GPU-memory cost.
 - B: useConptyDll for LocalPtyProvider spawns (local-pty-utils.ts) — parity with daemon.
 - D: atlas recovery bursts skip suspended panes (scoped to visible); retained panes repaint
   on resume (shared-atlas invariant preserved).
