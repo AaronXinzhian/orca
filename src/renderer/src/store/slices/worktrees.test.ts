@@ -5515,6 +5515,38 @@ describe('fetchAllWorktrees hydration-time purge (design §4.4)', () => {
     expect(store.getState().tabsByWorktree['repoA::/a/new-zombie']).toBeDefined()
   })
 
+  it('can defer the first successful purge during local-only startup refresh', async () => {
+    const store = createTestStore()
+    const wtA = makeWorktree({ id: 'repoA::/a/wt1', repoId: 'repoA', path: '/a/wt1' })
+    const wtB = makeWorktree({ id: 'repoB::/b/wt1', repoId: 'repoB', path: '/b/wt1' })
+
+    mockApi.worktrees.list.mockImplementation(async ({ repoId }: { repoId: string }) =>
+      repoId === 'repoA' ? [wtA] : [wtB]
+    )
+
+    store.setState({
+      repos: [repoA, repoB],
+      tabsByWorktree: {
+        'repoA::/a/wt1': [{ id: 'tab-A', worktreeId: 'repoA::/a/wt1' }],
+        'repoA::/a/zombie': [{ id: 'tab-zombie', worktreeId: 'repoA::/a/zombie' }],
+        'repoB::/b/wt1': [{ id: 'tab-B', worktreeId: 'repoB::/b/wt1' }]
+      }
+    } as unknown as Partial<AppState>)
+
+    await store.getState().fetchAllWorktrees({ hydrationPurge: 'defer' })
+
+    expect(store.getState().hasHydratedWorktreePurge).toBe(false)
+    expect(store.getState().tabsByWorktree['repoA::/a/zombie']).toBeDefined()
+
+    await store.getState().fetchAllWorktrees()
+
+    expect(store.getState().hasHydratedWorktreePurge).toBe(true)
+    expect(store.getState().tabsByWorktree).toEqual({
+      'repoA::/a/wt1': [{ id: 'tab-A', worktreeId: 'repoA::/a/wt1' }],
+      'repoB::/b/wt1': [{ id: 'tab-B', worktreeId: 'repoB::/b/wt1' }]
+    })
+  })
+
   // Why: multi-host regression — once hydration has fired, a mid-session
   // fetchAllWorktrees (e.g. triggered by switching focus) must NEVER purge
   // terminal state, even if a host transiently reports zero worktrees. The

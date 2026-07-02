@@ -20,13 +20,66 @@ import {
 
 export type HostPersistenceState = {
   repos: readonly Pick<Repo, 'id' | 'connectionId' | 'executionHostId'>[]
-  worktreesByRepo: Record<string, readonly Pick<Worktree, 'id' | 'repoId'>[]>
+  worktreesByRepo: Record<string, readonly Pick<Worktree, 'id' | 'repoId' | 'hostId'>[]>
 }
 
 type SessionApi = {
   get: (hostId?: ExecutionHostId) => Promise<WorkspaceSessionState>
   patch: (args: WorkspaceSessionPatch, hostId?: ExecutionHostId) => Promise<void>
   setSync: (args: WorkspaceSessionState, hostId?: ExecutionHostId) => void
+}
+
+export type WorkspaceSessionHostRead = {
+  session: WorkspaceSessionState
+  runtimeHostIdByWorktreeId: Record<string, ExecutionHostId>
+}
+
+const WORKTREE_KEYED_SESSION_FIELDS = [
+  'tabsByWorktree',
+  'openFilesByWorktree',
+  'activeFileIdByWorktree',
+  'activeBrowserTabIdByWorktree',
+  'activeTabTypeByWorktree',
+  'activeTabIdByWorktree',
+  'browserTabsByWorktree',
+  'unifiedTabs',
+  'tabGroups',
+  'tabGroupLayouts',
+  'activeGroupIdByWorktree',
+  'lastVisitedAtByWorktreeId',
+  'defaultTerminalTabsAppliedByWorktreeId'
+] as const satisfies readonly (keyof WorkspaceSessionState)[]
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function collectWorktreeIdsFromHostSession(session: WorkspaceSessionState): string[] {
+  const ids = new Set<string>()
+  for (const field of WORKTREE_KEYED_SESSION_FIELDS) {
+    const value = session[field]
+    if (isPlainRecord(value)) {
+      for (const id of Object.keys(value)) {
+        ids.add(id)
+      }
+    }
+  }
+  for (const id of session.activeWorktreeIdsOnShutdown ?? []) {
+    ids.add(id)
+  }
+  return [...ids]
+}
+
+function buildRuntimeHostIdByWorktreeId(
+  slices: HostSessionSlices
+): Record<string, ExecutionHostId> {
+  const owners: Record<string, ExecutionHostId> = {}
+  for (const [hostId, slice] of nonLocalEntries(slices)) {
+    for (const worktreeId of collectWorktreeIdsFromHostSession(slice)) {
+      owners[worktreeId] = hostId
+    }
+  }
+  return owners
 }
 
 /** Map a worktree to the host partition it persists under.
@@ -36,21 +89,37 @@ type SessionApi = {
  *  the unified blob) and separately mirrors them to each target's remote
  *  snapshot — partitioning them too would double-own that data. */
 export function buildHostIdByWorktreeId(state: HostPersistenceState): HostIdByWorktreeId {
-  const repoById = new Map(state.repos.map((repo) => [repo.id, repo]))
+  const repoHostById = new Map<string, ExecutionHostId | null>()
+  for (const repo of state.repos) {
+    const hostId = getRepoExecutionHostId(repo)
+    const existing = repoHostById.get(repo.id)
+    // Why: repo ids can repeat across hosts; ambiguous repo-only ownership
+    // must not let a runtime placeholder steal local session state.
+    repoHostById.set(repo.id, existing === undefined ? hostId : existing === hostId ? hostId : null)
+  }
   const repoIdByWorktreeId = new Map<string, string>()
+  const runtimeHostIdByWorktreeId = new Map<string, ExecutionHostId>()
   for (const worktrees of Object.values(state.worktreesByRepo)) {
     for (const worktree of worktrees) {
       repoIdByWorktreeId.set(worktree.id, worktree.repoId)
+      const parsedWorktreeHost = parseExecutionHostId(worktree.hostId)
+      if (parsedWorktreeHost?.kind === 'runtime') {
+        runtimeHostIdByWorktreeId.set(worktree.id, parsedWorktreeHost.id)
+      }
     }
   }
 
   return (worktreeId: string): ExecutionHostId => {
+    const worktreeHostId = runtimeHostIdByWorktreeId.get(worktreeId)
+    if (worktreeHostId) {
+      return worktreeHostId
+    }
     const repoId = repoIdByWorktreeId.get(worktreeId) ?? getRepoIdFromWorktreeId(worktreeId)
-    const repo = repoId ? repoById.get(repoId) : undefined
-    if (!repo) {
+    const repoHostId = repoId ? repoHostById.get(repoId) : undefined
+    if (!repoHostId) {
       return LOCAL_EXECUTION_HOST_ID
     }
-    const parsed = parseExecutionHostId(getRepoExecutionHostId(repo))
+    const parsed = parseExecutionHostId(repoHostId)
     return parsed?.kind === 'runtime' ? parsed.id : LOCAL_EXECUTION_HOST_ID
   }
 }
@@ -120,13 +189,27 @@ export function listKnownRuntimeHostIds(
  *  each one and falls back to defaults on the main side. */
 export async function fetchWorkspaceSessionFromHosts(
   api: Pick<SessionApi, 'get'>,
-  repos: readonly Pick<Repo, 'connectionId' | 'executionHostId'>[]
+  repos: readonly Pick<Repo, 'connectionId' | 'executionHostId'>[],
+  additionalRuntimeHostIds: readonly ExecutionHostId[] = []
 ): Promise<WorkspaceSessionState> {
+  return (await fetchWorkspaceSessionWithRuntimeHostOwners(api, repos, additionalRuntimeHostIds))
+    .session
+}
+
+export async function fetchWorkspaceSessionWithRuntimeHostOwners(
+  api: Pick<SessionApi, 'get'>,
+  repos: readonly Pick<Repo, 'connectionId' | 'executionHostId'>[],
+  additionalRuntimeHostIds: readonly ExecutionHostId[] = []
+): Promise<WorkspaceSessionHostRead> {
   const slices: HostSessionSlices = {
     [LOCAL_EXECUTION_HOST_ID]: await api.get()
   }
+  const runtimeHostIds = new Set<ExecutionHostId>([
+    ...listKnownRuntimeHostIds(repos),
+    ...additionalRuntimeHostIds
+  ])
   await Promise.all(
-    listKnownRuntimeHostIds(repos).map(async (hostId) => {
+    [...runtimeHostIds].map(async (hostId) => {
       try {
         slices[hostId] = await api.get(hostId)
       } catch (err) {
@@ -134,5 +217,8 @@ export async function fetchWorkspaceSessionFromHosts(
       }
     })
   )
-  return mergeWorkspaceSessionsFromHosts(slices)
+  return {
+    session: mergeWorkspaceSessionsFromHosts(slices),
+    runtimeHostIdByWorktreeId: buildRuntimeHostIdByWorktreeId(slices)
+  }
 }

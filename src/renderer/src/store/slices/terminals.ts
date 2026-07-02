@@ -2,6 +2,7 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
 import type {
+  Repo,
   SetupSplitDirection,
   Tab,
   TerminalLayoutSnapshot,
@@ -15,7 +16,11 @@ import type {
   AgentProviderSessionMetadata,
   SleepingAgentLaunchConfig
 } from '../../../../shared/agent-session-resume'
-import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
+import {
+  DEFAULT_REPO_BADGE_COLOR,
+  FLOATING_TERMINAL_WORKTREE_ID
+} from '../../../../shared/constants'
+import { parseExecutionHostId, type ExecutionHostId } from '../../../../shared/execution-host'
 import {
   folderWorkspaceKey,
   parseWorkspaceKey,
@@ -117,6 +122,85 @@ function getFallbackTabTitle(tab: TerminalTab, index?: number): string {
     tab.title ||
     `Terminal ${(index ?? 0) + 1}`
   )
+}
+
+function getPathDisplayName(path: string, fallback: string): string {
+  const normalized = path.trim().replace(/[\\/]+$/g, '')
+  const basename = normalized.split(/[\\/]/).filter(Boolean).at(-1)?.trim()
+  return basename || fallback
+}
+
+function buildRuntimeSessionPlaceholders({
+  repos,
+  runtimeHostIdByWorktreeId,
+  worktreesByRepo
+}: {
+  repos: readonly Repo[]
+  runtimeHostIdByWorktreeId: Record<string, ExecutionHostId>
+  worktreesByRepo: Record<string, Worktree[]>
+}): { repos: Repo[]; worktreesByRepo: Record<string, Worktree[]> } {
+  let nextRepos = repos.slice()
+  let nextWorktreesByRepo = worktreesByRepo
+  for (const worktreeId of Object.keys(runtimeHostIdByWorktreeId)) {
+    const hostId = runtimeHostIdByWorktreeId[worktreeId]
+    if (parseExecutionHostId(hostId)?.kind !== 'runtime') {
+      continue
+    }
+    const parsed = splitWorktreeId(worktreeId)
+    if (!parsed) {
+      continue
+    }
+    const existingRepo = nextRepos.some(
+      (repo) => repo.id === parsed.repoId && repo.executionHostId === hostId
+    )
+    if (!existingRepo) {
+      // Why: remote catalogs load after hydration, but host-split session
+      // writes need a runtime-owned repo immediately so restored tabs don't
+      // get reclassified into the local partition before the remote answers.
+      nextRepos = [
+        ...nextRepos,
+        {
+          id: parsed.repoId,
+          path: parsed.worktreePath,
+          displayName: getPathDisplayName(parsed.worktreePath, parsed.repoId),
+          badgeColor: DEFAULT_REPO_BADGE_COLOR,
+          addedAt: 0,
+          connectionId: null,
+          executionHostId: hostId
+        }
+      ]
+    }
+    const current = nextWorktreesByRepo[parsed.repoId] ?? []
+    if (current.some((worktree) => worktree.id === worktreeId)) {
+      continue
+    }
+    const placeholder: Worktree = {
+      id: worktreeId,
+      repoId: parsed.repoId,
+      hostId,
+      displayName: getPathDisplayName(parsed.worktreePath, parsed.repoId),
+      comment: '',
+      linkedIssue: null,
+      linkedPR: null,
+      linkedLinearIssue: null,
+      linkedGitLabMR: null,
+      linkedGitLabIssue: null,
+      isArchived: false,
+      isUnread: false,
+      isPinned: false,
+      sortOrder: 0,
+      lastActivityAt: 0,
+      path: parsed.worktreePath,
+      head: '',
+      branch: '',
+      isBare: false,
+      isMainWorktree: false
+    }
+    nextWorktreesByRepo =
+      nextWorktreesByRepo === worktreesByRepo ? { ...worktreesByRepo } : nextWorktreesByRepo
+    nextWorktreesByRepo[parsed.repoId] = [...current, placeholder]
+  }
+  return { repos: nextRepos, worktreesByRepo: nextWorktreesByRepo }
 }
 
 let terminalTabOwnerCacheSource: Record<string, TerminalTab[]> | null = null
@@ -575,8 +659,15 @@ export type TerminalSlice = {
   setDeferredSshReconnectTargets: (targetIds: string[]) => void
   removeDeferredSshReconnectTarget: (targetId: string) => void
   removeDeferredSshSessionId: (tabId: string) => void
-  hydrateWorkspaceSession: (session: WorkspaceSessionState) => void
+  hydrateWorkspaceSession: (
+    session: WorkspaceSessionState,
+    options?: HydrateWorkspaceSessionOptions
+  ) => void
   reconnectPersistedTerminals: (signal?: AbortSignal) => Promise<void>
+}
+
+export type HydrateWorkspaceSessionOptions = {
+  runtimeHostIdByWorktreeId?: Record<string, ExecutionHostId>
 }
 
 export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> = (set, get) => ({
@@ -2580,16 +2671,21 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     return data
   },
 
-  hydrateWorkspaceSession: (session) => {
+  hydrateWorkspaceSession: (session, options) => {
     set((s) => {
+      const runtimeSessionPlaceholders = buildRuntimeSessionPlaceholders({
+        repos: s.repos,
+        runtimeHostIdByWorktreeId: options?.runtimeHostIdByWorktreeId ?? {},
+        worktreesByRepo: s.worktreesByRepo
+      })
       const validWorktreeIds = new Set(
-        Object.values(s.worktreesByRepo)
+        Object.values(runtimeSessionPlaceholders.worktreesByRepo)
           .flat()
           .map((worktree) => worktree.id)
       )
-      const knownRepoIds = new Set(s.repos.map((r) => r.id))
+      const knownRepoIds = new Set(runtimeSessionPlaceholders.repos.map((r) => r.id))
       const repoIdsWithLoadedWorktrees = new Set(
-        Object.entries(s.worktreesByRepo)
+        Object.entries(runtimeSessionPlaceholders.worktreesByRepo)
           .filter(([, worktrees]) => worktrees.length > 0)
           .map(([repoId]) => repoId)
       )
@@ -2680,9 +2776,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       )
       const fallbackActiveWorktreeId =
         !session.activeWorktreeId && session.activeRepoId && knownRepoIds.has(session.activeRepoId)
-          ? (s.worktreesByRepo[session.activeRepoId]?.find((worktree) => worktree.isMainWorktree)
-              ?.id ??
-            s.worktreesByRepo[session.activeRepoId]?.[0]?.id ??
+          ? (runtimeSessionPlaceholders.worktreesByRepo[session.activeRepoId]?.find(
+              (worktree) => worktree.isMainWorktree
+            )?.id ??
+            runtimeSessionPlaceholders.worktreesByRepo[session.activeRepoId]?.[0]?.id ??
             null)
           : null
       const activeWorktreeId = (() => {
@@ -2705,7 +2802,8 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const activeTabId =
         session.activeTabId && validTabIds.has(session.activeTabId) ? session.activeTabId : null
       const activeRepoId =
-        session.activeRepoId && s.repos.some((repo) => repo.id === session.activeRepoId)
+        session.activeRepoId &&
+        runtimeSessionPlaceholders.repos.some((repo) => repo.id === session.activeRepoId)
           ? session.activeRepoId
           : null
 
@@ -2747,10 +2845,12 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // createOrAttach RPC, triggering reattach instead of a fresh spawn.
       const pendingReconnectPtyIdByTabId: Record<string, string> = {}
       for (const worktreeId of pendingReconnectWorktreeIds) {
-        const worktree = Object.values(s.worktreesByRepo)
+        const worktree = Object.values(runtimeSessionPlaceholders.worktreesByRepo)
           .flat()
           .find((entry) => entry.id === worktreeId)
-        const repo = worktree ? s.repos.find((entry) => entry.id === worktree.repoId) : null
+        const repo = worktree
+          ? runtimeSessionPlaceholders.repos.find((entry) => entry.id === worktree.repoId)
+          : null
         if (repo?.connectionId) {
           continue
         }
@@ -2802,8 +2902,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // data once SSH reconnects and fetchWorktrees runs.
       // Why: only SSH needs placeholders; local metadata should come from the
       // next successful fetch so the sidebar does not render synthetic entries.
-      const sshRepoIds = new Set(s.repos.filter((r) => r.connectionId).map((r) => r.id))
-      const worktreesByRepo = { ...s.worktreesByRepo }
+      const sshRepoIds = new Set(
+        runtimeSessionPlaceholders.repos.filter((r) => r.connectionId).map((r) => r.id)
+      )
+      const worktreesByRepo = { ...runtimeSessionPlaceholders.worktreesByRepo }
       for (const worktreeId of Object.keys(tabsByWorktree)) {
         const repoId = getRepoIdFromWorktreeId(worktreeId)
         if (!sshRepoIds.has(repoId)) {
@@ -2856,6 +2958,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         activeWorkspaceKey,
         activeTabId,
         activeTabIdByWorktree,
+        repos: runtimeSessionPlaceholders.repos,
         tabsByWorktree,
         worktreesByRepo,
         // Why: restore the per-worktree focus-recency map. Pruning of stale

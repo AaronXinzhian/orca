@@ -2249,7 +2249,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     }
   },
 
-  fetchAllWorktrees: async () => {
+  fetchAllWorktrees: async (options) => {
     const { repos } = get()
 
     // Why: once the one-shot hydration-time purge has fired, subsequent
@@ -2389,6 +2389,12 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     const allSucceeded = results.length > 0 && results.every((r) => r.ok) && hasAnyDetectedWorktree
     if (!allSucceeded) {
       // Defer; try again on the next fetchAllWorktrees call.
+      return
+    }
+    if (options?.hydrationPurge === 'defer') {
+      // Why: startup first refreshes only local repos so the app can paint
+      // before remote runtime timeouts. Keep the one-shot purge available for
+      // the later all-host refresh, when remote worktree ids are known too.
       return
     }
     const validIds = new Set<string>()

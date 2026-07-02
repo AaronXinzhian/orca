@@ -93,7 +93,10 @@ const mockApi = {
 globalThis.window = { api: mockApi }
 
 import type { WorkspaceSessionState } from '../../../../shared/types'
-import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
+import {
+  FLOATING_TERMINAL_WORKTREE_ID,
+  getDefaultWorkspaceSession
+} from '../../../../shared/constants'
 import { createTestStore, makeLayout, makeTab, makeWorktree, seedStore } from './store-test-helpers'
 import { canGoBackWorktreeHistory } from './worktree-nav-history'
 
@@ -137,6 +140,54 @@ describe('hydrateWorkspaceSession', () => {
       ptyIdsByLeafId: { 'pane:1': 'daemon-session-1' },
       buffersByLeafId: { 'pane:1': 'buffer' }
     })
+  })
+
+  it('hydrates runtime-owned tabs from host partitions before remote catalogs load', () => {
+    const store = createTestStore()
+    const worktreeId = 'remote-repo::/srv/remote-wt'
+    const session: WorkspaceSessionState = {
+      ...getDefaultWorkspaceSession(),
+      activeRepoId: 'remote-repo',
+      activeWorktreeId: worktreeId,
+      activeTabId: 'remote-tab',
+      activeWorktreeIdsOnShutdown: [worktreeId],
+      tabsByWorktree: {
+        [worktreeId]: [
+          makeTab({
+            id: 'remote-tab',
+            worktreeId,
+            ptyId: 'remote-session'
+          })
+        ]
+      },
+      remoteSessionIdsByTabId: { 'remote-tab': 'remote-session' }
+    }
+
+    store.getState().hydrateWorkspaceSession(session, {
+      runtimeHostIdByWorktreeId: { [worktreeId]: 'runtime:env-1' }
+    })
+
+    expect(store.getState().tabsByWorktree[worktreeId]?.map((tab) => tab.id)).toEqual([
+      'remote-tab'
+    ])
+    expect(store.getState().activeWorktreeId).toBe(worktreeId)
+    expect(store.getState().activeRepoId).toBe('remote-repo')
+    expect(store.getState().pendingReconnectWorktreeIds).toEqual([worktreeId])
+    expect(store.getState().pendingReconnectPtyIdByTabId).toEqual({
+      'remote-tab': 'remote-session'
+    })
+    expect(store.getState().repos).toEqual([
+      expect.objectContaining({
+        id: 'remote-repo',
+        executionHostId: 'runtime:env-1'
+      })
+    ])
+    expect(store.getState().worktreesByRepo['remote-repo']).toEqual([
+      expect.objectContaining({
+        id: worktreeId,
+        hostId: 'runtime:env-1'
+      })
+    ])
   })
 
   it('moves restored active focus from a dead split leaf to a pty-backed sibling', () => {

@@ -12,6 +12,7 @@ import {
   type RuntimeEnvironmentCallRequest
 } from '../../runtime/runtime-compatibility-test-fixture'
 import { clearRuntimeCompatibilityCacheForTests } from '../../runtime/runtime-rpc-client'
+import { getSetupScriptPromptDismissalKey } from '../../lib/setup-script-prompt'
 
 const localRepo: Repo = {
   id: 'local-repo',
@@ -684,6 +685,89 @@ describe('fetchReposForAllHosts', () => {
     expect(store.getState().repos.map((repo) => repo.id)).toEqual(['local-repo'])
   })
 
+  it('can load only the local catalog slice for first-paint startup', async () => {
+    const store = createTestStore()
+
+    await store.getState().fetchReposForAllHosts({ remoteHosts: 'skip' })
+    await store.getState().fetchProjectGroupsForAllHosts({ remoteHosts: 'skip' })
+    await store.getState().fetchFolderWorkspacesForAllHosts({ remoteHosts: 'skip' })
+
+    expect(runtimeEnvironmentsList).not.toHaveBeenCalled()
+    expect(runtimeEnvironmentTransportCall).not.toHaveBeenCalled()
+    expect(store.getState().repos).toEqual([{ ...localRepo, executionHostId: 'local' }])
+    expect(store.getState().projectGroups).toEqual([
+      { ...localProjectGroup, executionHostId: 'local' }
+    ])
+    expect(store.getState().folderWorkspaces).toEqual([localFolderWorkspace])
+  })
+
+  it('preserves remote repo filters during first-paint local catalog refresh', async () => {
+    const store = createTestStore()
+    const remoteDismissalKey = getSetupScriptPromptDismissalKey('remote-repo')
+    const staleDismissalKey = getSetupScriptPromptDismissalKey('stale-repo')
+    store.setState({
+      activeRepoId: 'remote-repo',
+      filterRepoIds: ['remote-repo', 'stale-repo'],
+      setupScriptPromptDismissedRepoIds: [remoteDismissalKey, staleDismissalKey]
+    })
+
+    await store.getState().fetchReposForAllHosts({ remoteHosts: 'skip' })
+
+    expect(store.getState().activeRepoId).toBe('remote-repo')
+    expect(store.getState().filterRepoIds).toEqual(['remote-repo', 'stale-repo'])
+    expect(store.getState().setupScriptPromptDismissedRepoIds).toEqual([
+      remoteDismissalKey,
+      staleDismissalKey
+    ])
+
+    await store.getState().fetchReposForAllHosts()
+
+    expect(store.getState().activeRepoId).toBe('remote-repo')
+    expect(store.getState().filterRepoIds).toEqual(['remote-repo'])
+    expect(store.getState().setupScriptPromptDismissedRepoIds).toEqual([remoteDismissalKey])
+  })
+
+  it('starts remote repo catalog loads concurrently for all configured runtimes', async () => {
+    runtimeEnvironmentsList.mockResolvedValue([
+      { id: 'env-1', name: 'first' },
+      { id: 'env-2', name: 'second' }
+    ])
+    const firstStatusResolvers = new Map<string, (value: unknown) => void>()
+    runtimeEnvironmentTransportCall.mockImplementation(
+      (args: RuntimeEnvironmentCallRequest & { selector?: string }) => {
+        if (
+          args.method === 'status.get' &&
+          args.selector &&
+          !firstStatusResolvers.has(args.selector)
+        ) {
+          return new Promise((resolve) => {
+            firstStatusResolvers.set(args.selector!, resolve)
+          })
+        }
+        return createCompatibleRuntimeStatusResponseIfNeeded(args) ?? runtimeEnvironmentCall(args)
+      }
+    )
+    const store = createTestStore()
+
+    const load = store.getState().fetchReposForAllHosts()
+    for (let attempt = 0; attempt < 10 && firstStatusResolvers.size < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    expect([...firstStatusResolvers.keys()].sort()).toEqual(['env-1', 'env-2'])
+    for (const resolve of firstStatusResolvers.values()) {
+      resolve(createCompatibleRuntimeStatusResponseIfNeeded({ method: 'status.get' }))
+    }
+    await load
+
+    expect(
+      store
+        .getState()
+        .repos.map((repo) => `${repo.id}:${repo.executionHostId}`)
+        .sort()
+    ).toEqual(['local-repo:local', 'remote-repo:runtime:env-1', 'remote-repo:runtime:env-2'])
+  })
+
   it('loads project groups and folder workspaces for every host', async () => {
     const store = createTestStore()
     store.setState({ settings: { activeRuntimeEnvironmentId: 'env-1' } as never })
@@ -723,5 +807,34 @@ describe('fetchReposForAllHosts', () => {
       { ...localProjectGroup, executionHostId: 'local' }
     ])
     expect(store.getState().folderWorkspaces).toEqual([localFolderWorkspace])
+  })
+
+  it('does not repeat offline runtime compatibility probes across startup catalog loads', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    runtimeEnvironmentTransportCall.mockResolvedValue({
+      id: 'status',
+      ok: false,
+      error: { code: 'runtime_unavailable', message: 'offline' },
+      _meta: { runtimeId: 'runtime-remote' }
+    })
+    const store = createTestStore()
+    store.setState({ settings: { activeRuntimeEnvironmentId: 'env-1' } as never })
+
+    try {
+      await store.getState().fetchReposForAllHosts()
+      await store.getState().fetchProjectGroupsForAllHosts()
+      await store.getState().fetchFolderWorkspacesForAllHosts()
+
+      expect(store.getState().repos).toEqual([{ ...localRepo, executionHostId: 'local' }])
+      expect(store.getState().projectGroups).toEqual([
+        { ...localProjectGroup, executionHostId: 'local' }
+      ])
+      expect(store.getState().folderWorkspaces).toEqual([localFolderWorkspace])
+      expect(runtimeEnvironmentTransportCall.mock.calls.map((call) => call[0].method)).toEqual([
+        'status.get'
+      ])
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
