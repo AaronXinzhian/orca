@@ -36,7 +36,6 @@ import {
   FileText,
   GitBranch,
   Globe,
-  History,
   Keyboard as KeyboardIcon,
   ListChecks,
   MessageSquare,
@@ -76,6 +75,7 @@ import {
 import { useMobilePrBranchContext } from '../../../../src/session/use-mobile-pr-branch-context'
 import { SessionDockColumn } from '../../../../src/session/SessionDockColumn'
 import { MobileSessionHeaderIconButton } from '../../../../src/session/MobileSessionHeaderIconButton'
+import { MobileAgentSessionHistoryIcon } from '../../../../src/agent-history/MobileAgentSessionHistoryIcon'
 import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
 import { useMobileDictation } from '../../../../src/hooks/use-mobile-dictation'
 import {
@@ -4621,7 +4621,7 @@ export default function SessionScreen() {
             {!isFolderWorkspaceRoute ? (
               <MobileSessionHeaderIconButton
                 accessibilityLabel="Open agent session history"
-                icon={History}
+                icon={MobileAgentSessionHistoryIcon}
                 onPress={openAgentSessionHistory}
               />
             ) : null}
