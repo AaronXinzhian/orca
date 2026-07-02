@@ -1,5 +1,6 @@
 import { WebglAddon } from '@xterm/addon-webgl'
 import type { ManagedPaneInternal } from './pane-manager-types'
+import { unretainWebglPane } from './pane-webgl-context-retention'
 import {
   getTerminalWebglAutoDecision,
   resetTerminalWebglAutoDecision
@@ -69,6 +70,10 @@ export function disposeWebgl(
   options?: { refreshDimensions?: boolean }
 ): void {
   cancelPendingWebglRefresh(pane)
+  // Why: every dispose path (pane close, context loss, GPU-setting off) must
+  // drop the retention entry, or the LRU would later evict-dispose a pane
+  // whose addon was already gone.
+  unretainWebglPane(pane)
   if (!pane.webglAddon) {
     return
   }
@@ -115,7 +120,11 @@ export function markComplexScriptOutput(pane: ManagedPaneInternal): void {
 }
 
 export function resetWebglTextureAtlas(pane: ManagedPaneInternal): void {
-  if (!pane.webglAddon || pane.webglDisabledAfterContextLoss) {
+  // Why: suspended panes keep retained contexts but are invisible; their
+  // rebuild is deferred to resumePaneRendering. Clearing + repainting them
+  // here would make every recovery burst scale with total pane count across
+  // all workspaces instead of visible panes.
+  if (!pane.webglAddon || pane.webglDisabledAfterContextLoss || pane.webglAttachmentDeferred) {
     return
   }
   try {

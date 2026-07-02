@@ -167,6 +167,11 @@ export class PaneManager {
 
   refreshAllPanes(): void {
     for (const pane of this.panes.values()) {
+      // Why: suspended panes are invisible and repaint on rendering resume;
+      // recovery repaints must not scale with hidden-workspace pane count.
+      if (pane.webglAttachmentDeferred) {
+        continue
+      }
       try {
         if (pane.terminal.rows > 0) {
           pane.terminal.refresh(0, pane.terminal.rows - 1)
