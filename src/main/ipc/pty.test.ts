@@ -2911,6 +2911,104 @@ describe('registerPtyHandlers', () => {
       keepHistory: true
     })
     expect(runtime.onPtyExit).toHaveBeenCalledWith('local-pty', -1)
+    expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:exit', {
+      id: 'local-pty',
+      code: -1
+    })
+  })
+
+  it('does not synthesize a duplicate renderer exit when kill emits provider exit', async () => {
+    const exitListeners = new Set<(payload: { id: string; code: number }) => void>()
+    const shutdown = vi.fn(async (id: string) => {
+      for (const listener of exitListeners) {
+        listener({ id, code: 0 })
+      }
+    })
+    const runtime = {
+      setPtyController: vi.fn(),
+      onPtyExit: vi.fn()
+    }
+    setLocalPtyProvider({
+      spawn: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown,
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn((listener: (payload: { id: string; code: number }) => void) => {
+        exitListeners.add(listener)
+        return () => exitListeners.delete(listener)
+      }),
+      listProcesses: vi.fn(async () => []),
+      attach: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    } as never)
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, runtime as never)
+
+    await handlers.get('pty:kill')!(null, { id: 'local-pty' })
+
+    expect(runtime.onPtyExit).toHaveBeenCalledTimes(1)
+    expect(runtime.onPtyExit).toHaveBeenCalledWith('local-pty', 0)
+    expect(mainWindow.webContents.send.mock.calls.filter((call) => call[0] === 'pty:exit')).toEqual(
+      [['pty:exit', { id: 'local-pty', code: 0 }]]
+    )
+  })
+
+  it('ignores a late provider exit after synthesizing kill exit', async () => {
+    const exitListeners = new Set<(payload: { id: string; code: number }) => void>()
+    const runtime = {
+      setPtyController: vi.fn(),
+      onPtyExit: vi.fn()
+    }
+    setLocalPtyProvider({
+      spawn: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown: vi.fn(async () => undefined),
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn((listener: (payload: { id: string; code: number }) => void) => {
+        exitListeners.add(listener)
+        return () => exitListeners.delete(listener)
+      }),
+      listProcesses: vi.fn(async () => []),
+      attach: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    } as never)
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, runtime as never)
+
+    await handlers.get('pty:kill')!(null, { id: 'local-pty' })
+    for (const listener of exitListeners) {
+      listener({ id: 'local-pty', code: 0 })
+    }
+
+    expect(runtime.onPtyExit).toHaveBeenCalledTimes(1)
+    expect(runtime.onPtyExit).toHaveBeenCalledWith('local-pty', -1)
+    expect(mainWindow.webContents.send.mock.calls.filter((call) => call[0] === 'pty:exit')).toEqual(
+      [['pty:exit', { id: 'local-pty', code: -1 }]]
+    )
   })
 
   it('waits for the desktop startup barrier before renderer local spawns resolve the provider', async () => {

@@ -111,6 +111,7 @@ type FreshLocalFallbackProvider = IPtyProvider & {
   routesFreshSpawnsToLocalProvider?: true
 }
 const sshProviders = new Map<string, IPtyProvider>()
+const SYNTHETIC_KILL_EXIT_DUPLICATE_WINDOW_MS = 30_000
 // Why: PTY IDs are assigned at spawn time with a connectionId, but subsequent
 // write/resize/kill calls only carry the PTY ID. This map lets us route
 // post-spawn operations to the correct provider without the renderer needing
@@ -1656,6 +1657,82 @@ export function registerPtyHandlers(
     flushTimer = null
   }
 
+  const syntheticKillExitPtyIds = new Map<string, NodeJS.Timeout>()
+
+  function rememberSyntheticKillExit(id: string): void {
+    const existing = syntheticKillExitPtyIds.get(id)
+    if (existing) {
+      clearTimeout(existing)
+    }
+    // Why: some providers can report the real exit after kill has already
+    // completed; skip only that late duplicate, not a future reused id forever.
+    const cleanupTimer = setTimeout(() => {
+      syntheticKillExitPtyIds.delete(id)
+    }, SYNTHETIC_KILL_EXIT_DUPLICATE_WINDOW_MS)
+    cleanupTimer.unref?.()
+    syntheticKillExitPtyIds.set(id, cleanupTimer)
+  }
+
+  function consumeSyntheticKillExit(id: string): boolean {
+    const cleanupTimer = syntheticKillExitPtyIds.get(id)
+    if (!cleanupTimer) {
+      return false
+    }
+    clearTimeout(cleanupTimer)
+    syntheticKillExitPtyIds.delete(id)
+    return true
+  }
+
+  function sendPtyExitToRenderer(payload: { id: string; code: number }): void {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    // Why: flush any batched data for this PTY before sending the exit event,
+    // otherwise the last <=8ms of output is silently lost because the renderer
+    // tears down the terminal on pty:exit before the batch timer fires.
+    const remaining = pendingData.get(payload.id)
+    if (remaining) {
+      sendPtyDataToRenderer(
+        payload.id,
+        makePtyDataPayload(
+          payload.id,
+          remaining.data,
+          remaining.startSeq,
+          remaining.containsBackgroundOutput
+        )
+      )
+      pendingData.delete(payload.id)
+    }
+    lastInputAtByPty.delete(payload.id)
+    interactiveOutputCharsByPty.delete(payload.id)
+    rendererInFlightTotalChars = Math.max(
+      0,
+      rendererInFlightTotalChars - (rendererInFlightCharsByPty.get(payload.id) ?? 0)
+    )
+    rendererInFlightCharsByPty.delete(payload.id)
+    recordPtyRendererDeliveryPressure()
+    mainWindow.webContents.send('pty:exit', payload)
+  }
+
+  async function shutdownProviderAndDetectExit(
+    provider: IPtyProvider,
+    id: string,
+    opts: { immediate?: boolean; keepHistory?: boolean }
+  ): Promise<boolean> {
+    let providerExitObserved = false
+    const unsubscribe = provider.onExit((payload) => {
+      if (payload.id === id) {
+        providerExitObserved = true
+      }
+    })
+    try {
+      await provider.shutdown(id, opts)
+    } finally {
+      unsubscribe()
+    }
+    return providerExitObserved
+  }
+
   // Why: extracted so the "Restart daemon" flow can rebind against the fresh
   // adapter after replaceDaemonProvider runs. Both the startup registration
   // and the post-restart rebind go through the same code path — no risk of
@@ -1745,39 +1822,16 @@ export function registerPtyHandlers(
       }
     })
     localExitUnsub = localProvider.onExit((payload) => {
+      if (consumeSyntheticKillExit(payload.id)) {
+        return
+      }
       if (!isLocalProvider) {
         clearProviderPtyState(payload.id)
         ptyOwnership.delete(payload.id)
         markClaudePtyExited(payload.id)
         runtime?.onPtyExit(payload.id, payload.code)
       }
-      if (!mainWindow.isDestroyed()) {
-        // Why: flush any batched data for this PTY before sending the exit event,
-        // otherwise the last ≤8ms of output is silently lost because the renderer
-        // tears down the terminal on pty:exit before the batch timer fires.
-        const remaining = pendingData.get(payload.id)
-        if (remaining) {
-          sendPtyDataToRenderer(
-            payload.id,
-            makePtyDataPayload(
-              payload.id,
-              remaining.data,
-              remaining.startSeq,
-              remaining.containsBackgroundOutput
-            )
-          )
-          pendingData.delete(payload.id)
-        }
-        lastInputAtByPty.delete(payload.id)
-        interactiveOutputCharsByPty.delete(payload.id)
-        rendererInFlightTotalChars = Math.max(
-          0,
-          rendererInFlightTotalChars - (rendererInFlightCharsByPty.get(payload.id) ?? 0)
-        )
-        rendererInFlightCharsByPty.delete(payload.id)
-        recordPtyRendererDeliveryPressure()
-        mainWindow.webContents.send('pty:exit', payload)
-      }
+      sendPtyExitToRenderer(payload)
     })
   }
 
@@ -3396,10 +3450,14 @@ export function registerPtyHandlers(
       // before ownership is rebuilt. Tombstone instead of falling back local.
       finishPtyShutdown(args.id, connectionId, store)
       runtime?.onPtyExit(args.id, -1)
+      rememberSyntheticKillExit(args.id)
+      sendPtyExitToRenderer({ id: args.id, code: -1 })
       return
     }
+    const shutdownProvider = provider ?? getProviderForPty(args.id)
+    let providerExitObserved = false
     try {
-      await (provider ?? getProviderForPty(args.id)).shutdown(args.id, {
+      providerExitObserved = await shutdownProviderAndDetectExit(shutdownProvider, args.id, {
         immediate: true,
         keepHistory: args.keepHistory ?? false
       })
@@ -3412,11 +3470,14 @@ export function registerPtyHandlers(
       }
       /* session already dead — cleanup below handles the rest */
     }
-    // Why: onExit clears provider state for LocalPtyProvider, but remote SSH
-    // and daemon shutdown paths do not emit onExit through the local provider's
-    // listener. Explicit cleanup is idempotent and covers already-dead PTYs.
+    // Why: some shutdown paths do not emit onExit through the provider listener.
+    // Explicit cleanup is idempotent and covers already-dead PTYs.
     finishPtyShutdown(args.id, connectionId, store)
-    runtime?.onPtyExit(args.id, -1)
+    if (!providerExitObserved) {
+      runtime?.onPtyExit(args.id, -1)
+      rememberSyntheticKillExit(args.id)
+      sendPtyExitToRenderer({ id: args.id, code: -1 })
+    }
   })
 
   ipcMain.handle(
